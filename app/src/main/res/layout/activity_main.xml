@@ -54,7 +54,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="32dp"
-            android:text="Wake-words:\n• \"Friday answer the call\" → answers on speaker\n• \"Friday hang up now\" → ends the call\n\nThese fire your MacroDroid macros. Keep MacroDroid installed and the two Intent-Received macros enabled."
+            android:text="Wake-words:\n• Friday answer the call → answers on speaker\n• Friday hang up now → ends the call\n\nThese fire your MacroDroid macros. Keep MacroDroid installed and both Intent-Received macros enabled."
             android:textSize="14sp" />
     </LinearLayout>
 </ScrollView>
