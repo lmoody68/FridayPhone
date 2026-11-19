@@ -44,6 +44,16 @@ class MainActivity : AppCompatActivity() {
         }
 
         b.btnBattery.setOnClickListener { requestBatteryExemption() }
+
+        // Diagnostics: fire the intents directly, bypassing the recognizer, to prove the MacroDroid wiring.
+        b.btnTestAnswer.setOnClickListener {
+            ListenerService.sendCommand(this, ListenerService.ACTION_ANSWER)
+            Toast.makeText(this, "Sent ANSWER → MacroDroid", Toast.LENGTH_SHORT).show()
+        }
+        b.btnTestHangup.setOnClickListener {
+            ListenerService.sendCommand(this, ListenerService.ACTION_HANGUP)
+            Toast.makeText(this, "Sent HANG UP → MacroDroid", Toast.LENGTH_SHORT).show()
+        }
     }
 
     override fun onResume() {

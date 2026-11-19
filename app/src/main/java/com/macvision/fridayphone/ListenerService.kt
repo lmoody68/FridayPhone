@@ -17,6 +17,7 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.util.Log
+import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import ai.picovoice.porcupine.PorcupineManager
@@ -185,11 +186,11 @@ class ListenerService : Service() {
     // ── Fire the command to MacroDroid ──────────────────────────────────────────────────────────
     private fun fire(action: String) {
         Log.i(TAG, "Wake-word -> $action")
-        // Explicit broadcast to MacroDroid's "Intent Received" trigger.
-        val i = Intent(action).setPackage(MACRODROID_PKG)
-        sendBroadcast(i)
-        // Also send implicitly as a belt-and-suspenders (MacroDroid registers its trigger receiver dynamically).
-        sendBroadcast(Intent(action))
+        Handler(Looper.getMainLooper()).post {
+            val label = if (action == ACTION_ANSWER) "ANSWER" else "HANG UP"
+            Toast.makeText(applicationContext, "Friday heard: $label", Toast.LENGTH_SHORT).show()
+        }
+        sendCommand(applicationContext, action)
     }
 
     // ── Asset helpers ───────────────────────────────────────────────────────────────────────────
@@ -212,6 +213,12 @@ class ListenerService : Service() {
         const val MACRODROID_PKG = "com.arlosoft.macrodroid"
         const val ACTION_ANSWER = "com.macvision.fridayphone.ANSWER"
         const val ACTION_HANGUP = "com.macvision.fridayphone.HANGUP"
+
+        /** Fire a command to MacroDroid: explicit broadcast to its package, plus an implicit one as backup. */
+        fun sendCommand(ctx: Context, action: String) {
+            ctx.sendBroadcast(Intent(action).setPackage(MACRODROID_PKG))
+            ctx.sendBroadcast(Intent(action))
+        }
 
         fun start(ctx: Context) {
             val i = Intent(ctx, ListenerService::class.java)
