@@ -8,3 +8,6 @@
 /captures/
 .externalNativeBuild/
 .cxx/
+# Vosk model is fetched at CI build time (see workflow) — never commit the ~40 MB binary blob.
+/app/src/main/assets/model-en-us/
+/model.zip

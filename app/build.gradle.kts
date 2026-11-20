@@ -11,8 +11,8 @@ android {
         applicationId = "com.macvision.fridayphone"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.3.0"
     }
 
     buildTypes {
@@ -38,8 +38,11 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("com.google.android.material:material:1.12.0")
     implementation("androidx.lifecycle:lifecycle-service:2.8.4")
-    // Offline custom wake-words ("Friday answer the call" / "Friday hang up now").
-    // Activates once the user adds assets/picovoice_key.txt + friday_answer.ppn + friday_hangup.ppn
-    // (see PORCUPINE_SETUP.md). Until then the app falls back to Android's on-device recognizer.
-    implementation("ai.picovoice:porcupine-android:3.0.2")
+    // Offline wake-word ("Friday answer the call") via Vosk — no account, no cloud, Apache-2.0.
+    // The ~40 MB small English model is fetched into app/src/main/assets/model-en-us at CI build
+    // time (see .github/workflows/android-build.yml) and unpacked to internal storage on first run.
+    implementation("com.alphacephei:vosk-android:0.3.47")
+    // Vosk's native layer talks through JNA. The Android @aar classifier doesn't always resolve
+    // transitively, so pin it explicitly (version matches what vosk-android 0.3.47 expects).
+    implementation("net.java.dev.jna:jna:5.13.0@aar")
 }

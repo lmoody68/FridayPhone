@@ -24,7 +24,7 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
             android:gravity="center"
-            android:text="Hands-free call control. Say your wake-word to answer on speaker, or to hang up."
+            android:text="Hands-free call control. Say &quot;Friday answer the call&quot; to pick up on speaker. Shake the phone to hang up."
             android:textSize="15sp" />
 
         <TextView
@@ -76,7 +76,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="32dp"
-            android:text="Wake-words:\n• Friday answer the call → answers on speaker\n• Friday hang up now → ends the call\n\nThese fire your MacroDroid macros. Keep MacroDroid installed and both Intent-Received macros enabled."
+            android:text="How it works:\n• Say &quot;Friday answer the call&quot; → answers on speaker\n• Shake the phone → hangs up (works even during a call)\n\nVoice hang-up (&quot;Friday hang up&quot;) also works when you are NOT already on a call — Android blocks the mic for any app during an active call, so shake is the reliable hang-up. These fire your MacroDroid macros; keep MacroDroid installed with both triggers enabled."
             android:textSize="14sp" />
     </LinearLayout>
 </ScrollView>
