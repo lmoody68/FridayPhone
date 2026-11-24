@@ -24,7 +24,7 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
             android:gravity="center"
-            android:text="Hands-free call control. Say &quot;Friday answer the call&quot; to pick up on speaker. Shake the phone to hang up."
+            android:text="Hands-free call control. Say &quot;Friday answer the call&quot; to pick up on speaker, or &quot;Friday hang up the call&quot; to end it. Works on Google Voice (VoIP) calls."
             android:textSize="15sp" />
 
         <TextView
@@ -111,7 +111,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="32dp"
-            android:text="How it works:\n• Say &quot;Friday answer the call&quot; → answers on speaker\n• Shake the phone → hangs up (works even during a call)\n\nVoice hang-up (&quot;Friday hang up&quot;) also works when you are NOT already on a call — Android blocks the mic for any app during an active call, so shake is the reliable hang-up. These fire your MacroDroid macros; keep MacroDroid installed with both triggers enabled."
+            android:text="How it works:\n• Say &quot;Friday answer the call&quot; → answers on speaker\n• Say &quot;Friday hang up the call&quot; → ends the call\n\nMid-call voice hang-up works on Google Voice (VoIP) calls — Friday listens on the VOICE_COMMUNICATION mic, which stays open during a data call. On a plain carrier (cellular) call the OS silences all app mics, so place/receive through the Google Voice app for voice hang-up. These fire your MacroDroid macros; keep MacroDroid installed with its triggers enabled."
             android:textSize="14sp" />
     </LinearLayout>
 </ScrollView>

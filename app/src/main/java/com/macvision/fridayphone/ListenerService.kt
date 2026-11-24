@@ -4,11 +4,15 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.annotation.SuppressLint
 import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.media.AudioFormat
 import android.media.AudioManager
+import android.media.AudioRecord
+import android.media.MediaRecorder
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -33,8 +37,10 @@ import org.vosk.android.RecognitionListener as VoskListener
  * Friday Phone — the "ears" (dual-engine, wake-word gated).
  *
  * ANSWER (the ring): Vosk, offline — hears the phrase over the ringtone (mic free until the call connects).
- * HANG UP (during a call): system SpeechRecognizer — a privileged service that can hear mid-call when a
- * third-party app's own AudioRecord (Vosk) cannot. We switch engines on call state (AudioManager mode).
+ * HANG UP (during a call): Vosk fed by a dedicated AudioRecord on the VOICE_COMMUNICATION source. MEASURED
+ * 2026-11-23 on this A15: during a Google Voice (VoIP) call, VOICE_COMMUNICATION delivers the user's voice
+ * (peak ~13537) while MIC/VOICE_RECOGNITION are faint and a cellular call silences everything. So we capture
+ * VOICE_COMMUNICATION mid-call and run the same grammar/recognizer. We switch engines on call state.
  *
  * To act, the recognized text must contain the wake word "friday" AND a command word — otherwise ambient
  * audio (a TV) trips the tiny grammar. The Vosk grammar itself only holds "friday <action>" phrases + [unk].
@@ -50,6 +56,12 @@ class ListenerService : Service() {
     private var inCall = false
     private var audioManager: AudioManager? = null
     private var modeListener: AudioManager.OnModeChangedListener? = null
+
+    // In-call engine: our own AudioRecord on VOICE_COMMUNICATION feeding a Vosk recognizer.
+    @Volatile private var inCallRunning = false
+    private var inCallThread: Thread? = null
+    private var inCallAudio: AudioRecord? = null
+    private var inCallRecognizer: Recognizer? = null
 
     private var lastAnswer = 0L
     private var lastHangup = 0L
@@ -125,11 +137,12 @@ class ListenerService : Service() {
         if (running) return
         running = true
         registerCallDetector()
-        if (isCallActive()) { inCall = true; startSR() } else { inCall = false; startVoskEngine() }
+        if (isCallActive()) { inCall = true; startInCallListener() } else { inCall = false; startVoskEngine() }
     }
 
     private fun stopAll() {
         stopVosk()
+        stopInCallListener()
         stopSR()
     }
 
@@ -165,11 +178,12 @@ class ListenerService : Service() {
         if (active && !inCall) {
             inCall = true
             stopVosk()
-            startSR()
+            startInCallListener()
             updateNotif("On a call — say \"Friday hang up\" to end it.")
-            Log.i(TAG, "Call active -> SpeechRecognizer (hang-up mode)")
+            Log.i(TAG, "Call active -> in-call Vosk (VOICE_COMMUNICATION)")
         } else if (!active && inCall) {
             inCall = false
+            stopInCallListener()
             stopSR()
             if (running) startVoskEngine()
             updateNotif("Say \"Friday answer the call\" to pick up on speaker.")
@@ -242,7 +256,77 @@ class ListenerService : Service() {
         }, RETRY_MS)
     }
 
-    // ── SpeechRecognizer (system service; hears DURING a call -> hang-up) ────────────────────
+    // ── In-call listener: Vosk on a VOICE_COMMUNICATION AudioRecord (hears DURING a VoIP call) ──
+    private fun ensureModel(cb: (Model) -> Unit) {
+        val m = voskModel
+        if (m != null) { cb(m); return }
+        if (!hasVoskModel()) { Log.w(TAG, "No Vosk model for in-call -> SR fallback"); startSR(); return }
+        StorageService.unpack(
+            this, MODEL_ASSET, "model",
+            { model -> voskModel = model; cb(model) },
+            { e -> Log.w(TAG, "In-call model unpack failed: ${e.message} -> SR"); startSR() }
+        )
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startInCallListener() {
+        ensureModel { model ->
+            try {
+                stopInCallListener()
+                val rate = SAMPLE_RATE.toInt()
+                val minBuf = AudioRecord.getMinBufferSize(
+                    rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
+                ).coerceAtLeast(rate)
+                val audio = AudioRecord(
+                    MediaRecorder.AudioSource.VOICE_COMMUNICATION, rate,
+                    AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, minBuf * 2
+                )
+                if (audio.state != AudioRecord.STATE_INITIALIZED) {
+                    Log.w(TAG, "In-call AudioRecord init failed -> SR fallback")
+                    try { audio.release() } catch (_: Exception) {}
+                    startSR(); return@ensureModel
+                }
+                val rec = Recognizer(model, SAMPLE_RATE, grammarJson())
+                inCallAudio = audio
+                inCallRecognizer = rec
+                inCallRunning = true
+                audio.startRecording()
+                val t = Thread {
+                    val buf = ShortArray(2048)
+                    try {
+                        while (inCallRunning) {
+                            val n = audio.read(buf, 0, buf.size)
+                            if (n > 0) {
+                                if (rec.acceptWaveForm(buf, n)) scan(extract(rec.result, "text"))
+                                else scan(extract(rec.partialResult, "partial"))
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "In-call loop error: ${e.message}")
+                    }
+                }
+                inCallThread = t
+                t.start()
+                Log.i(TAG, "In-call Vosk listener active (VOICE_COMMUNICATION)")
+            } catch (e: Exception) {
+                Log.w(TAG, "In-call listener start failed: ${e.message} -> SR fallback")
+                startSR()
+            }
+        }
+    }
+
+    private fun stopInCallListener() {
+        inCallRunning = false
+        try { inCallThread?.join(500) } catch (_: Exception) {}
+        inCallThread = null
+        try { inCallAudio?.stop() } catch (_: Exception) {}
+        try { inCallAudio?.release() } catch (_: Exception) {}
+        inCallAudio = null
+        try { inCallRecognizer?.close() } catch (_: Exception) {}
+        inCallRecognizer = null
+    }
+
+    // ── SpeechRecognizer (legacy fallback only; silenced mid-call on this device) ──────────────
     private fun startSR() {
         if (!SpeechRecognizer.isRecognitionAvailable(this)) {
             Log.w(TAG, "Speech recognition unavailable on this device")
@@ -350,8 +434,12 @@ class ListenerService : Service() {
         // onto a bare command. Matching ALSO requires "friday" + an action word (see scan()).
         val GRAMMAR = listOf(
             "friday answer the call", "friday answer", "friday pick up", "friday take the call",
-            "friday hang up", "friday hang up now", "friday end the call", "friday end call",
-            "friday disconnect", "friday disconnect the call", "friday drop the call",
+            "friday hang up", "friday hang up now", "friday hang up the call",
+            "friday end the call", "friday end call", "friday disconnect",
+            "friday disconnect the call", "friday disconnect call", "friday drop the call",
+            "hey friday answer the call", "hey friday answer", "hey friday pick up",
+            "hey friday hang up", "hey friday hang up the call", "hey friday end the call",
+            "hey friday disconnect", "hey friday disconnect the call", "hey friday drop the call",
             "[unk]"
         )
 
