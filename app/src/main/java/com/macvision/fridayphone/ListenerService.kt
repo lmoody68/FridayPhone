@@ -33,9 +33,7 @@ import androidx.core.app.ServiceCompat
 import org.json.JSONObject
 import org.vosk.Model
 import org.vosk.Recognizer
-import org.vosk.android.SpeechService
 import org.vosk.android.StorageService
-import org.vosk.android.RecognitionListener as VoskListener
 
 /**
  * Friday Phone — the "ears" (dual-engine, wake-word gated).
@@ -52,8 +50,6 @@ import org.vosk.android.RecognitionListener as VoskListener
 class ListenerService : Service() {
 
     private var voskModel: Model? = null
-    private var voskRecognizer: Recognizer? = null
-    private var voskService: SpeechService? = null
     private var recognizer: SpeechRecognizer? = null
     private var running = false
 
@@ -65,11 +61,11 @@ class ListenerService : Service() {
     private var telephonyCb: TelephonyCallback? = null
     private var phoneListener: PhoneStateListener? = null
 
-    // In-call engine: our own AudioRecord on VOICE_COMMUNICATION feeding a Vosk recognizer.
-    @Volatile private var inCallRunning = false
-    private var inCallThread: Thread? = null
-    private var inCallAudio: AudioRecord? = null
-    private var inCallRecognizer: Recognizer? = null
+    // Capture engine: our own AudioRecord feeding a Vosk recognizer (idle = MIC, in-call = VOICE_COMMUNICATION).
+    @Volatile private var capRunning = false
+    private var capThread: Thread? = null
+    private var capAudio: AudioRecord? = null
+    private var capRecognizer: Recognizer? = null
 
     private var lastAnswer = 0L
     private var lastHangup = 0L
@@ -150,18 +146,12 @@ class ListenerService : Service() {
         running = true
         registerCallDetector()
         registerRingDetector()
-        if (isCallActive()) { inCall = true; startInCallListener() } else { inCall = false; startVoskEngine() }
+        if (isCallActive()) { inCall = true; startInCallListener() } else { inCall = false; startIdleListener() }
     }
 
     private fun stopAll() {
-        stopVosk()
-        stopInCallListener()
+        stopCapture()
         stopSR()
-    }
-
-    private fun startVoskEngine() {
-        if (!running || inCall) return
-        if (hasVoskModel()) startVosk() else startSR()
     }
 
     // ── Call detection via audio mode (no extra permission) ────────────────────────────
@@ -237,153 +227,115 @@ class ListenerService : Service() {
         val active = (mode == AudioManager.MODE_IN_CALL || mode == AudioManager.MODE_IN_COMMUNICATION)
         if (active && !inCall) {
             inCall = true
-            stopVosk()
+            stopCapture()
             startInCallListener()
             updateNotif("On a call — say \"Friday hang up\" to end it.")
-            Log.i(TAG, "Call active -> in-call Vosk (VOICE_COMMUNICATION)")
+            Log.i(TAG, "Call active -> in-call listener (VOICE_COMMUNICATION)")
         } else if (!active && inCall) {
             inCall = false
-            stopInCallListener()
+            stopCapture()
             stopSR()
-            if (running) startVoskEngine()
+            if (running) startIdleListener()
             updateNotif("Say \"Friday answer the call\" to pick up on speaker.")
-            Log.i(TAG, "Call ended -> Vosk (answer mode)")
+            Log.i(TAG, "Call ended -> idle listener (MIC)")
         }
     }
 
-    // ── Vosk (offline; answers the ring) ────────────────────────────────────────
+    // ── Robust capture: OUR OWN AudioRecord loop feeding a Vosk Recognizer, for BOTH the idle
+    //    wake-word listener (MIC) and the in-call listener (VOICE_COMMUNICATION). Vosk's bundled
+    //    SpeechService could report itself "active" while its recorder silently stopped (no active
+    //    record client) — this loop is under our control, logs its state, and re-arms if a read fails.
     private fun hasVoskModel(): Boolean =
         try { !(assets.list(MODEL_ASSET).isNullOrEmpty()) } catch (_: Exception) { false }
 
-    private fun startVosk() {
-        StorageService.unpack(
-            this, MODEL_ASSET, "model",
-            { model ->
-                try {
-                    voskModel = model
-                    armVosk(model)
-                    Log.i(TAG, "Vosk wake-word active")
-                } catch (e: Exception) {
-                    Log.w(TAG, "Vosk start failed, falling back: ${e.message}")
-                    startSR()
-                }
-            },
-            { e ->
-                Log.w(TAG, "Vosk model unpack failed, falling back: ${e.message}")
-                startSR()
-            }
-        )
-    }
-
-    private fun armVosk(model: Model) {
-        try { voskService?.shutdown() } catch (_: Exception) {}
-        voskService = null
-        try { voskRecognizer?.close() } catch (_: Exception) {}
-        val rec = Recognizer(model, SAMPLE_RATE, grammarJson())
-        voskRecognizer = rec
-        val svc = SpeechService(rec, SAMPLE_RATE)
-        voskService = svc
-        svc.startListening(voskCallback)
-    }
-
-    private fun stopVosk() {
-        try { voskService?.stop() } catch (_: Exception) {}
-        try { voskService?.shutdown() } catch (_: Exception) {}
-        voskService = null
-        try { voskRecognizer?.close() } catch (_: Exception) {}
-        voskRecognizer = null
-    }
-
-    private val voskCallback = object : VoskListener {
-        override fun onPartialResult(hypothesis: String?) = scan(extract(hypothesis, "partial"))
-        override fun onResult(hypothesis: String?) = scan(extract(hypothesis, "text"))
-        override fun onFinalResult(hypothesis: String?) = scan(extract(hypothesis, "text"))
-        override fun onError(e: Exception?) {
-            Log.w(TAG, "Vosk error (mic busy?): ${e?.message}")
-            retryVosk()
-        }
-        override fun onTimeout() { }
-    }
-
-    private fun retryVosk() {
-        voskService = null
-        if (!running || inCall) return
-        Handler(Looper.getMainLooper()).postDelayed({
-            if (!running || inCall || voskService != null) return@postDelayed
-            val model = voskModel ?: return@postDelayed
-            try { armVosk(model); Log.i(TAG, "Vosk re-armed") }
-            catch (e: Exception) { Log.w(TAG, "Vosk re-arm failed: ${e.message}"); retryVosk() }
-        }, RETRY_MS)
-    }
-
-    // ── In-call listener: Vosk on a VOICE_COMMUNICATION AudioRecord (hears DURING a VoIP call) ──
     private fun ensureModel(cb: (Model) -> Unit) {
         val m = voskModel
         if (m != null) { cb(m); return }
-        if (!hasVoskModel()) { Log.w(TAG, "No Vosk model for in-call -> SR fallback"); startSR(); return }
+        if (!hasVoskModel()) { Log.w(TAG, "No Vosk model -> SR fallback"); startSR(); return }
         StorageService.unpack(
             this, MODEL_ASSET, "model",
             { model -> voskModel = model; cb(model) },
-            { e -> Log.w(TAG, "In-call model unpack failed: ${e.message} -> SR"); startSR() }
+            { e -> Log.w(TAG, "Vosk model unpack failed: ${e.message} -> SR"); startSR() }
         )
     }
 
-    @SuppressLint("MissingPermission")
+    /** Idle wake-word listener (not in a connected call): MIC source + full grammar. */
+    private fun startIdleListener() {
+        if (!running || inCall) return
+        startCapture(MediaRecorder.AudioSource.MIC, grammarJson(), "idle")
+    }
+
+    /** In-call listener (hears DURING a VoIP call): VOICE_COMMUNICATION source + hang-up grammar. */
     private fun startInCallListener() {
+        startCapture(MediaRecorder.AudioSource.VOICE_COMMUNICATION, inCallGrammarJson(), "in-call")
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startCapture(source: Int, grammar: String, label: String) {
         ensureModel { model ->
             try {
-                stopInCallListener()
+                stopCapture()
                 val rate = SAMPLE_RATE.toInt()
                 val minBuf = AudioRecord.getMinBufferSize(
                     rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
                 ).coerceAtLeast(rate)
                 val audio = AudioRecord(
-                    MediaRecorder.AudioSource.VOICE_COMMUNICATION, rate,
-                    AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, minBuf * 2
+                    source, rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, minBuf * 2
                 )
                 if (audio.state != AudioRecord.STATE_INITIALIZED) {
-                    Log.w(TAG, "In-call AudioRecord init failed -> SR fallback")
+                    Log.w(TAG, "$label AudioRecord init failed -> SR fallback")
                     try { audio.release() } catch (_: Exception) {}
                     startSR(); return@ensureModel
                 }
-                val rec = Recognizer(model, SAMPLE_RATE, inCallGrammarJson())
-                inCallAudio = audio
-                inCallRecognizer = rec
-                inCallRunning = true
+                val rec = Recognizer(model, SAMPLE_RATE, grammar)
+                capAudio = audio
+                capRecognizer = rec
+                capRunning = true
                 audio.startRecording()
                 val t = Thread {
                     val buf = ShortArray(2048)
+                    var faulted = false
                     try {
-                        while (inCallRunning) {
+                        while (capRunning) {
                             val n = audio.read(buf, 0, buf.size)
                             if (n > 0) {
                                 if (rec.acceptWaveForm(buf, n)) scan(extract(rec.result, "text"))
                                 else scan(extract(rec.partialResult, "partial"))
+                            } else if (n < 0) {
+                                Log.w(TAG, "$label read error ($n)"); faulted = true; break
                             }
                         }
                     } catch (e: Exception) {
-                        Log.w(TAG, "In-call loop error: ${e.message}")
+                        Log.w(TAG, "$label loop error: ${e.message}"); faulted = true
+                    }
+                    // Ended while we still wanted to listen (a read failed, not a clean stop) -> re-arm.
+                    if (faulted && capRunning) {
+                        capRunning = false
+                        Handler(Looper.getMainLooper()).postDelayed({
+                            if (!running) return@postDelayed
+                            if (inCall) startInCallListener() else startIdleListener()
+                        }, RETRY_MS)
                     }
                 }
-                inCallThread = t
+                capThread = t
                 t.start()
-                Log.i(TAG, "In-call Vosk listener active (VOICE_COMMUNICATION)")
+                Log.i(TAG, "$label listener active (source=$source)")
             } catch (e: Exception) {
-                Log.w(TAG, "In-call listener start failed: ${e.message} -> SR fallback")
+                Log.w(TAG, "$label listener start failed: ${e.message} -> SR fallback")
                 startSR()
             }
         }
     }
 
-    private fun stopInCallListener() {
-        inCallRunning = false
-        try { inCallThread?.join(500) } catch (_: Exception) {}
-        inCallThread = null
-        try { inCallAudio?.stop() } catch (_: Exception) {}
-        try { inCallAudio?.release() } catch (_: Exception) {}
-        inCallAudio = null
-        try { inCallRecognizer?.close() } catch (_: Exception) {}
-        inCallRecognizer = null
+    private fun stopCapture() {
+        capRunning = false
+        try { capThread?.join(500) } catch (_: Exception) {}
+        capThread = null
+        try { capAudio?.stop() } catch (_: Exception) {}
+        try { capAudio?.release() } catch (_: Exception) {}
+        capAudio = null
+        try { capRecognizer?.close() } catch (_: Exception) {}
+        capRecognizer = null
     }
 
     // ── SpeechRecognizer (legacy fallback only; silenced mid-call on this device) ──────────────
