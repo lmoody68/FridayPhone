@@ -286,7 +286,7 @@ class ListenerService : Service() {
                     try { audio.release() } catch (_: Exception) {}
                     startSR(); return@ensureModel
                 }
-                val rec = Recognizer(model, SAMPLE_RATE, grammarJson())
+                val rec = Recognizer(model, SAMPLE_RATE, inCallGrammarJson())
                 inCallAudio = audio
                 inCallRecognizer = rec
                 inCallRunning = true
@@ -389,6 +389,12 @@ class ListenerService : Service() {
             return
         }
         Log.i(TAG, "heard: \"$text\"")
+        if (inCall) {
+            // During a call only HANG UP is meaningful; ignore "answer" so garbled call audio
+            // can't fire the wrong command (and the in-call grammar holds hang-up phrases only).
+            if (hangupActions.any { text.contains(it) }) maybeFire(ACTION_HANGUP)
+            return
+        }
         when {
             hangupActions.any { text.contains(it) } -> maybeFire(ACTION_HANGUP)
             answerActions.any { text.contains(it) } -> maybeFire(ACTION_ANSWER)
@@ -443,7 +449,20 @@ class ListenerService : Service() {
             "[unk]"
         )
 
+        // During a call, hang-up phrases ONLY (+ [unk]) — so garbled call audio can't collapse onto
+        // an "answer" phrase. The recognizer's whole search space is hang-up variants.
+        val IN_CALL_GRAMMAR = listOf(
+            "friday hang up", "friday hang up now", "friday hang up the call",
+            "friday end the call", "friday end call", "friday disconnect",
+            "friday disconnect the call", "friday disconnect call", "friday drop the call",
+            "hey friday hang up", "hey friday hang up the call", "hey friday hang up now",
+            "hey friday end the call", "hey friday disconnect", "hey friday disconnect the call",
+            "hey friday drop the call",
+            "[unk]"
+        )
+
         private fun grammarJson(): String = GRAMMAR.joinToString(prefix = "[", postfix = "]") { "\"$it\"" }
+        private fun inCallGrammarJson(): String = IN_CALL_GRAMMAR.joinToString(prefix = "[", postfix = "]") { "\"$it\"" }
 
         fun sendCommand(ctx: Context, action: String) {
             ctx.sendBroadcast(Intent(action).setPackage(MACRODROID_PKG))
