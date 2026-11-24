@@ -11,8 +11,8 @@ android {
         applicationId = "com.macvision.fridayphone"
         minSdk = 26
         targetSdk = 34
-        versionCode = 22
-        versionName = "0.9.2-release"
+        versionCode = 23
+        versionName = "0.10.0-shake"
     }
 
     // Fixed signing key so every build has the SAME signature → updates install in place

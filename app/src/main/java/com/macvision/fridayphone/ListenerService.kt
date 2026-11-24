@@ -10,6 +10,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.telephony.PhoneStateListener
 import android.telephony.TelephonyCallback
 import android.telephony.TelephonyManager
@@ -60,6 +64,13 @@ class ListenerService : Service() {
     private var telephony: TelephonyManager? = null
     private var telephonyCb: TelephonyCallback? = null
     private var phoneListener: PhoneStateListener? = null
+
+    // Shake-to-hang-up: the mic is silenced mid-call but the accelerometer is NOT. A firm shake ends it.
+    private var sensorManager: SensorManager? = null
+    private var shakeListener: SensorEventListener? = null
+    private var shakeCount = 0
+    private var lastShakeAt = 0L
+    private var lastShakeHangup = 0L
 
     // Capture engine: our own AudioRecord feeding a Vosk recognizer (idle = MIC, in-call = VOICE_COMMUNICATION).
     @Volatile private var capRunning = false
@@ -151,6 +162,7 @@ class ListenerService : Service() {
 
     private fun stopAll() {
         stopCapture()
+        stopShakeDetector()
         stopSR()
     }
 
@@ -217,6 +229,44 @@ class ListenerService : Service() {
         phoneListener = null
     }
 
+    // ── Shake-to-hang-up: a firm shake during a call ends it (the accelerometer is not blocked in-call) ──
+    private fun startShakeDetector() {
+        if (shakeListener != null) return
+        sensorManager = getSystemService(Context.SENSOR_SERVICE) as? SensorManager
+        val accel = sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER) ?: return
+        shakeCount = 0
+        val l = object : SensorEventListener {
+            override fun onSensorChanged(e: SensorEvent) {
+                val x = e.values[0]; val y = e.values[1]; val z = e.values[2]
+                val gForce = Math.sqrt((x * x + y * y + z * z).toDouble()) - SensorManager.GRAVITY_EARTH
+                if (Math.abs(gForce) > SHAKE_THRESHOLD) {
+                    val now = SystemClock.elapsedRealtime()
+                    if (now - lastShakeAt > SHAKE_WINDOW_MS) shakeCount = 0   // peaks must cluster
+                    lastShakeAt = now
+                    shakeCount++
+                    if (shakeCount >= SHAKE_COUNT && now - lastShakeHangup > 5000) {
+                        lastShakeHangup = now
+                        shakeCount = 0
+                        Log.i(TAG, "SHAKE -> hang up (in-call)")
+                        Handler(Looper.getMainLooper()).post { CallController.hangup(applicationContext) }
+                    }
+                }
+            }
+            override fun onAccuracyChanged(s: Sensor?, a: Int) {}
+        }
+        shakeListener = l
+        try {
+            sensorManager?.registerListener(l, accel, SensorManager.SENSOR_DELAY_GAME)
+            Log.i(TAG, "shake-to-hang-up detector active")
+        } catch (e: Exception) { Log.w(TAG, "shake detector failed: ${e.message}"); shakeListener = null }
+    }
+
+    private fun stopShakeDetector() {
+        shakeListener?.let { try { sensorManager?.unregisterListener(it) } catch (_: Exception) {} }
+        shakeListener = null
+        shakeCount = 0
+    }
+
     private fun isCallActive(): Boolean {
         val m = audioManager?.mode ?: AudioManager.MODE_NORMAL
         return m == AudioManager.MODE_IN_CALL || m == AudioManager.MODE_IN_COMMUNICATION
@@ -229,11 +279,13 @@ class ListenerService : Service() {
             inCall = true
             stopCapture()
             startInCallListener()
-            updateNotif("On a call — say \"Friday hang up\" to end it.")
-            Log.i(TAG, "Call active -> in-call listener (VOICE_COMMUNICATION)")
+            startShakeDetector()
+            updateNotif("On a call — shake the phone to hang up (or press Power).")
+            Log.i(TAG, "Call active -> in-call listener + shake detector")
         } else if (!active && inCall) {
             inCall = false
             stopCapture()
+            stopShakeDetector()
             stopSR()
             if (running) startIdleListener()
             updateNotif("Say \"Friday answer the call\" to pick up on speaker.")
@@ -478,6 +530,11 @@ class ListenerService : Service() {
         const val MODEL_ASSET = "model-en-us"
         const val SAMPLE_RATE = 16000.0f
         const val COOLDOWN_MS = 6000L   // wide enough that one spoken command, heard repeatedly, fires once
+        // Shake-to-hang-up: a DELIBERATE shake (high threshold, several clustered peaks) so road bumps
+        // and normal handling don't end a call. ~13 m/s² above gravity, 3 peaks within 1.2s.
+        const val SHAKE_THRESHOLD = 13.0
+        const val SHAKE_COUNT = 3
+        const val SHAKE_WINDOW_MS = 1200L
         const val RETRY_MS = 2500L
 
         // Only "friday <action>" phrases (+ [unk] to absorb everything else) so ambient audio doesn't map
