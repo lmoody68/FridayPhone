@@ -132,7 +132,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="32dp"
-            android:text="How it works:\n• &quot;Friday answer the call&quot; → answers on speaker\n• &quot;Friday hang up the call&quot; → ends the call\n• &quot;Friday send to voicemail&quot; → declines an incoming call\n\nFriday acts on the phone itself — no MacroDroid. Answer and send-to-voicemail use the phone's Telecom system (grant the Phone/ANSWER_PHONE_CALLS permission). Hang-up taps Google Voice's own End button, which needs Friday's Accessibility Service ON (tap the button above). Mid-call voice hang-up works on Google Voice (VoIP) calls, where the mic stays open during the call."
+            android:text="How it works:\n• &quot;Friday answer the call&quot; → answers on speaker\n• &quot;Friday disconnect the call&quot; → hangs up DURING a call\n• &quot;Friday send to voicemail&quot; → declines an incoming call\n• &quot;Friday call Chris&quot; → dials that contact (then &quot;Friday stop&quot; within a few seconds to cancel)\n\nFriday acts on the phone itself — no MacroDroid. Answer / voicemail / dialing use the phone's Telecom system + your contacts (grant Phone + Contacts). Hang-up taps the dialer's own End button via Friday's Accessibility Service. Mid-call hang-up needs Friday set as the default assistant — that's what lets her hear you during a call."
             android:textSize="14sp" />
     </LinearLayout>
 </ScrollView>

@@ -86,6 +86,14 @@ class ListenerService : Service() {
     private val answerActions = listOf("answer", "pick up", "take the call")
     private val hangupActions = listOf("hang up", "hangup", "end call", "end the call", "disconnect", "drop the call", "drop")
     private val voicemailActions = listOf("voicemail", "send to voice", "send it to voice", "send them to voice", "voice mail")
+    private val cancelActions = listOf("stop", "cancel", "never mind", "nevermind")
+
+    // Outbound calling by voice: name -> number from the phone's own contacts (on-device only).
+    @Volatile private var contactMap: Map<String, String> = emptyMap()
+    private val callHandler = Handler(Looper.getMainLooper())
+    @Volatile private var pendingCallNumber: String? = null
+    @Volatile private var pendingCallName: String? = null
+    private var pendingDialRunnable: Runnable? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -155,6 +163,7 @@ class ListenerService : Service() {
     private fun startListening() {
         if (running) return
         running = true
+        contactMap = Contacts.load(this)   // load phone contacts so "Friday call <name>" works
         registerCallDetector()
         registerRingDetector()
         if (isCallActive()) { inCall = true; startInCallListener() } else { inCall = false; startIdleListener() }
@@ -309,10 +318,26 @@ class ListenerService : Service() {
         )
     }
 
-    /** Idle wake-word listener (not in a connected call): MIC source + full grammar. */
+    /** Idle wake-word listener (not in a connected call): MIC source + full grammar (incl. contacts). */
     private fun startIdleListener() {
         if (!running || inCall) return
-        startCapture(MediaRecorder.AudioSource.MIC, grammarJson(), "idle")
+        startCapture(MediaRecorder.AudioSource.MIC, idleGrammarJson(), "idle")
+    }
+
+    /**
+     * Idle grammar = the base commands + "friday call <name>" for each phone contact (single-word
+     * first names only, which Vosk can recognize) + cancel words for the dial confirmation window.
+     */
+    private fun idleGrammarJson(): String {
+        val phrases = GRAMMAR.filter { it != "[unk]" }.toMutableList()
+        for (name in contactMap.keys.filter { !it.contains(" ") }) {
+            phrases.add("friday call $name")
+            phrases.add("hey friday call $name")
+        }
+        phrases.add("friday stop"); phrases.add("friday cancel")
+        phrases.add("stop"); phrases.add("cancel"); phrases.add("never mind")
+        phrases.add("[unk]")
+        return phrases.joinToString(prefix = "[", postfix = "]") { "\"$it\"" }
     }
 
     /**
@@ -499,6 +524,8 @@ class ListenerService : Service() {
     private fun scan(text: String) {
         if (text.isBlank()) return
         if (!text.contains("friday")) {
+            // A bare "stop"/"cancel" during the dial confirmation window aborts the pending call.
+            if (pendingCallNumber != null && cancelActions.any { text.contains(it) }) { cancelPendingCall(); return }
             // The ringtone garbles the wake word, but READ_PHONE_STATE tells us a call is genuinely
             // RINGING. In that short, unambiguous window, act on the command alone — no wake word
             // required. Answer wins ties: a wrongly-answered call is recoverable, a wrongly-declined
@@ -521,6 +548,9 @@ class ListenerService : Service() {
             if (hangupActions.any { text.contains(it) }) maybeFire(ACTION_HANGUP)
             return
         }
+        // Cancel a pending dial, or start a new outbound call ("Friday call Chris").
+        if (pendingCallNumber != null && cancelActions.any { text.contains(it) }) { cancelPendingCall(); return }
+        matchCallTarget(text)?.let { startPendingCall(it); return }
         // Not in a call (idle or a call ringing): answer / send-to-voicemail / hang up.
         // Check voicemail first — "send to voicemail" must not be swallowed by another match.
         when {
@@ -528,6 +558,44 @@ class ListenerService : Service() {
             hangupActions.any { text.contains(it) } -> maybeFire(ACTION_HANGUP)
             answerActions.any { text.contains(it) } -> maybeFire(ACTION_ANSWER)
         }
+    }
+
+    /** "Friday call <name>" → the matched contact key, or null. Won't fire on answer/hang-up/voicemail. */
+    private fun matchCallTarget(text: String): String? {
+        if (ringing || inCall || contactMap.isEmpty()) return null
+        if (!text.contains("call")) return null
+        if (answerActions.any { text.contains(it) } || hangupActions.any { text.contains(it) } ||
+            voicemailActions.any { text.contains(it) }) return null
+        val words = text.split(Regex("\\s+"))
+        val idx = words.indexOf("call")
+        if (idx >= 0 && idx + 1 < words.size && contactMap.containsKey(words[idx + 1])) return words[idx + 1]
+        return contactMap.keys.firstOrNull { !it.contains(" ") && words.contains(it) }
+    }
+
+    /** Announce, then dial after a short cancel window (so a misheard name doesn't call the wrong person). */
+    private fun startPendingCall(name: String) {
+        val number = contactMap[name] ?: return
+        pendingDialRunnable?.let { callHandler.removeCallbacks(it) }
+        pendingCallNumber = number; pendingCallName = name
+        val spoken = name.replaceFirstChar { it.uppercase() }
+        Voice.say("Calling $spoken. Say Friday stop to cancel.")
+        Log.i(TAG, "pending call -> $spoken (4s cancel window)")
+        val r = Runnable {
+            val num = pendingCallNumber; val nm = pendingCallName ?: ""
+            pendingCallNumber = null; pendingCallName = null; pendingDialRunnable = null
+            if (num != null) CallController.callOut(applicationContext, num, nm)
+        }
+        pendingDialRunnable = r
+        callHandler.postDelayed(r, 4000L)
+    }
+
+    private fun cancelPendingCall() {
+        pendingDialRunnable?.let { callHandler.removeCallbacks(it) }
+        pendingDialRunnable = null
+        val nm = pendingCallName ?: "?"
+        pendingCallNumber = null; pendingCallName = null
+        Voice.say("Okay, cancelled.")
+        Log.i(TAG, "pending call cancelled ($nm)")
     }
 
     // ── Fire the command to MacroDroid ───────────────────────────────────────

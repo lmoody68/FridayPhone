@@ -3,7 +3,9 @@ package com.macvision.fridayphone
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.os.Build
@@ -100,6 +102,34 @@ object CallController {
             }
         }
         Log.i(ListenerService.TAG, "CallController.hangup -> $ok")
+    }
+
+    /**
+     * Place an OUTBOUND call by voice ("Friday call Chris"). Fires ACTION_CALL (needs CALL_PHONE),
+     * then turns the speaker on so it's hands-free like an answered call. The confirmation +
+     * cancel window happen in ListenerService BEFORE this is called, so by here we are dialing.
+     */
+    @SuppressLint("MissingPermission")
+    fun callOut(ctx: Context, number: String, name: String) {
+        Voice.init(ctx)
+        if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.CALL_PHONE)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            Voice.say("I don't have permission to place calls yet, sir.")
+            Log.w(ListenerService.TAG, "callOut: CALL_PHONE not granted")
+            return
+        }
+        try {
+            val i = Intent(Intent.ACTION_CALL, Uri.fromParts("tel", number, null))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            ctx.startActivity(i)
+            Log.i(ListenerService.TAG, "CallController.callOut -> dialing $name")
+            lastSpeakerOn = 0L          // this is a new call — allow a fresh speaker sequence
+            speakerOn(ctx)
+        } catch (e: Exception) {
+            Log.w(ListenerService.TAG, "callOut: ${e.message}")
+            Voice.say("I couldn't place the call, sir.")
+        }
     }
 
     /**
