@@ -61,6 +61,20 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // Set Friday as the phone's default digital assistant (grants in-call mic access).
+        b.btnAssistant.setOnClickListener {
+            val tries = listOf(
+                "android.settings.VOICE_INPUT_SETTINGS",
+                Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS,
+                Settings.ACTION_SETTINGS
+            )
+            for (a in tries) {
+                try { startActivity(Intent(a)); break } catch (_: Exception) {}
+            }
+            Toast.makeText(this,
+                "Pick \"Digital assistant app\" → Friday Phone.", Toast.LENGTH_LONG).show()
+        }
+
         // Diagnostics: run each action directly, bypassing the recognizer, to prove the wiring.
         b.btnTestAnswer.setOnClickListener {
             ListenerService.sendCommand(this, ListenerService.ACTION_ANSWER)

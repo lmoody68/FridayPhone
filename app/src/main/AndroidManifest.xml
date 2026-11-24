@@ -54,6 +54,37 @@
                 android:resource="@xml/friday_a11y_config" />
         </service>
 
+        <!-- Assistant: makes Friday a selectable "digital assistant." As the default assistant she
+             gets the in-call microphone exemption, so she can hear commands while a call holds the mic. -->
+        <service
+            android:name=".FridayInteractionService"
+            android:permission="android.permission.BIND_VOICE_INTERACTION"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.service.voice.VoiceInteractionService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.voice_interaction"
+                android:resource="@xml/interaction_service" />
+        </service>
+
+        <service
+            android:name=".FridaySessionService"
+            android:permission="android.permission.BIND_VOICE_INTERACTION"
+            android:exported="true" />
+
+        <service
+            android:name=".FridayRecognitionService"
+            android:permission="android.permission.BIND_RECOGNITION_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.speech.RecognitionService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.speech"
+                android:resource="@xml/recognition_service" />
+        </service>
+
         <!-- Restart the listener after reboot. -->
         <receiver
             android:name=".BootReceiver"
