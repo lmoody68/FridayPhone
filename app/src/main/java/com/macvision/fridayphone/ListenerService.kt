@@ -8,6 +8,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -29,25 +30,18 @@ import org.vosk.android.StorageService
 import org.vosk.android.RecognitionListener as VoskListener
 
 /**
- * Friday Phone — the "ears".
+ * Friday Phone — the "ears" (dual-engine).
  *
- * A microphone foreground service that listens OFFLINE for a wake phrase via **Vosk** (Apache-2.0, no
- * account, no cloud — unlike Picovoice, which now gates its free tier behind commercial approval). When it
- * hears the phrase it broadcasts an intent that MacroDroid's "Intent Received" trigger catches and runs the
- * proven answer-on-speaker / end-call macros. Keeping the telephony in MacroDroid means this app only has to
- * listen and poke — minimal surface, minimal bugs.
+ * ANSWER (the ring): Vosk, offline, direct AudioRecord — hears the phrase over the ringtone because the
+ * mic is still free until the call connects.
  *
- *   "Friday answer the call"  -> ACTION_ANSWER  (answer + speaker)
- *   "Friday hang up"          -> ACTION_HANGUP  (end call)  — see the hard limit below
+ * HANG UP (during a call): Android's system SpeechRecognizer. A third-party app's OWN AudioRecord (Vosk) is
+ * blocked from the mic once a call is active, but the system recognizer runs in a privileged service that
+ * CAN hear you mid-call — this is what worked in v0.2. So when a call goes active we hand off from Vosk to
+ * SpeechRecognizer, and switch back to Vosk when the call ends.
  *
- * HARD ANDROID LIMIT: no third-party app can read the mic DURING an active call (telephony owns it), so
- * voice hang-up only works while you are NOT already connected. The reliable hang-up is **shake-to-hang-up**,
- * which is a MacroDroid Shake trigger (a sensor, no mic) and works mid-call. Design = speak to answer, shake
- * to hang up. When a call connects the mic goes busy and Vosk errors; we simply re-arm so we're listening
- * again the instant the call ends.
- *
- * If the Vosk model isn't bundled (e.g. a local build without the CI fetch step), it falls back to Android's
- * on-device SpeechRecognizer so the pipeline is still testable — but that fallback cannot hear during a ring.
+ * Call-active is detected via AudioManager mode (MODE_IN_CALL / MODE_IN_COMMUNICATION) — no extra permission.
+ * Both engines broadcast the same intents that MacroDroid's "Intent Received" triggers catch.
  */
 class ListenerService : Service() {
 
@@ -57,7 +51,11 @@ class ListenerService : Service() {
     private var recognizer: SpeechRecognizer? = null
     private var running = false
 
-    // A spoken phrase arrives across many partial frames — cool down so it fires once, not on every frame.
+    // Dual-engine state.
+    private var inCall = false
+    private var audioManager: AudioManager? = null
+    private var modeListener: AudioManager.OnModeChangedListener? = null
+
     private var lastAnswer = 0L
     private var lastHangup = 0L
 
@@ -79,11 +77,12 @@ class ListenerService : Service() {
 
     override fun onDestroy() {
         running = false
-        stopListening()
+        unregisterCallDetector()
+        stopAll()
         super.onDestroy()
     }
 
-    // ── Foreground notification (microphone type) ───────────────────────────────────────────────
+    // ── Foreground notification (microphone type) ──────────────────────────────────────
     private fun startAsForeground() {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -91,55 +90,102 @@ class ListenerService : Service() {
             ch.description = "Friday is listening for your wake-word."
             nm.createNotificationChannel(ch)
         }
+        showNotif(buildNotif("Say \"Friday answer the call\" to pick up on speaker."), foreground = true)
+    }
+
+    private fun buildNotif(text: String): Notification {
         val tap = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
-        val notif: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
+        return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Friday is listening")
-            .setContentText("Say \"Friday answer the call\" to pick up on speaker.")
+            .setContentText(text)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentIntent(tap)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
+    }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            ServiceCompat.startForeground(this, NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+    private fun showNotif(n: Notification, foreground: Boolean = false) {
+        if (foreground) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                ServiceCompat.startForeground(this, NOTIF_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+            } else {
+                startForeground(NOTIF_ID, n)
+            }
         } else {
-            startForeground(NOTIF_ID, notif)
+            try {
+                (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).notify(NOTIF_ID, n)
+            } catch (_: Exception) {}
         }
     }
 
-    // ── Listening ───────────────────────────────────────────────────────────────────────────────
+    private fun updateNotif(text: String) = showNotif(buildNotif(text))
+
+    // ── Listening lifecycle ─────────────────────────────────────────────────
     private fun startListening() {
         if (running) return
         running = true
-        if (hasVoskModel()) {
-            startVosk()
-        } else {
-            Log.w(TAG, "Vosk model missing — using SpeechRecognizer fallback")
-            startSpeechRecognizer()
+        registerCallDetector()
+        if (isCallActive()) { inCall = true; startSR() } else { inCall = false; startVoskEngine() }
+    }
+
+    private fun stopAll() {
+        stopVosk()
+        stopSR()
+    }
+
+    /** Vosk is the idle/ring engine (answers the call). Never run it during an active call. */
+    private fun startVoskEngine() {
+        if (!running || inCall) return
+        if (hasVoskModel()) startVosk() else startSR()
+    }
+
+    // ── Call detection via audio mode (no extra permission) ────────────────────────────
+    private fun registerCallDetector() {
+        audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val l = AudioManager.OnModeChangedListener { mode -> onAudioMode(mode) }
+            modeListener = l
+            try { audioManager?.addOnModeChangedListener(mainExecutor, l) } catch (_: Exception) {}
         }
     }
 
-    private fun stopListening() {
-        try { voskService?.stop() } catch (_: Exception) {}
-        try { voskService?.shutdown() } catch (_: Exception) {}
-        voskService = null
-        try { voskRecognizer?.close() } catch (_: Exception) {}
-        voskRecognizer = null
-        try { voskModel?.close() } catch (_: Exception) {}
-        voskModel = null
-        try { recognizer?.destroy() } catch (_: Exception) {}
-        recognizer = null
+    private fun unregisterCallDetector() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            modeListener?.let { try { audioManager?.removeOnModeChangedListener(it) } catch (_: Exception) {} }
+        }
+        modeListener = null
     }
 
-    // ── Vosk (offline, production) ──────────────────────────────────────────────────────────────
+    private fun isCallActive(): Boolean {
+        val m = audioManager?.mode ?: AudioManager.MODE_NORMAL
+        return m == AudioManager.MODE_IN_CALL || m == AudioManager.MODE_IN_COMMUNICATION
+    }
+
+    private fun onAudioMode(mode: Int) {
+        val active = (mode == AudioManager.MODE_IN_CALL || mode == AudioManager.MODE_IN_COMMUNICATION)
+        if (active && !inCall) {
+            inCall = true
+            stopVosk()
+            startSR()
+            updateNotif("On a call — say \"Friday hang up\" to end it.")
+            Log.i(TAG, "Call active -> SpeechRecognizer (hang-up mode)")
+        } else if (!active && inCall) {
+            inCall = false
+            stopSR()
+            if (running) startVoskEngine()
+            updateNotif("Say \"Friday answer the call\" to pick up on speaker.")
+            Log.i(TAG, "Call ended -> Vosk (answer mode)")
+        }
+    }
+
+    // ── Vosk (offline; answers the ring) ────────────────────────────────────────
     private fun hasVoskModel(): Boolean =
         try { !(assets.list(MODEL_ASSET).isNullOrEmpty()) } catch (_: Exception) { false }
 
-    /** Unpack the bundled model once (assets -> internal storage), then start continuous recognition. */
     private fun startVosk() {
         StorageService.unpack(
             this, MODEL_ASSET, "model",
@@ -150,22 +196,20 @@ class ListenerService : Service() {
                     Log.i(TAG, "Vosk wake-word active")
                 } catch (e: Exception) {
                     Log.w(TAG, "Vosk start failed, falling back: ${e.message}")
-                    startSpeechRecognizer()
+                    startSR()
                 }
             },
             { e ->
                 Log.w(TAG, "Vosk model unpack failed, falling back: ${e.message}")
-                startSpeechRecognizer()
+                startSR()
             }
         )
     }
 
-    /** (Re)build a grammar-restricted recognizer + capture service and start listening. */
     private fun armVosk(model: Model) {
         try { voskService?.shutdown() } catch (_: Exception) {}
         voskService = null
         try { voskRecognizer?.close() } catch (_: Exception) {}
-        // A tight grammar (only our phrases + "[unk]") makes keyword spotting fast and accurate.
         val rec = Recognizer(model, SAMPLE_RATE, grammarJson())
         voskRecognizer = rec
         val svc = SpeechService(rec, SAMPLE_RATE)
@@ -173,18 +217,91 @@ class ListenerService : Service() {
         svc.startListening(voskCallback)
     }
 
+    private fun stopVosk() {
+        try { voskService?.stop() } catch (_: Exception) {}
+        try { voskService?.shutdown() } catch (_: Exception) {}
+        voskService = null
+        try { voskRecognizer?.close() } catch (_: Exception) {}
+        voskRecognizer = null
+        // keep voskModel loaded for a fast re-arm after the call
+    }
+
     private val voskCallback = object : VoskListener {
         override fun onPartialResult(hypothesis: String?) = scan(extract(hypothesis, "partial"))
         override fun onResult(hypothesis: String?) = scan(extract(hypothesis, "text"))
         override fun onFinalResult(hypothesis: String?) = scan(extract(hypothesis, "text"))
         override fun onError(e: Exception?) {
-            // Most common cause: the mic went busy because a call CONNECTED (telephony owns it). Expected —
-            // voice hang-up mid-call is impossible; shake-to-hang-up (MacroDroid) covers it. Re-arm so we're
-            // listening again the moment the mic frees up (the call ends).
             Log.w(TAG, "Vosk error (mic busy?): ${e?.message}")
             retryVosk()
         }
-        override fun onTimeout() { /* continuous mode: nothing to do */ }
+        override fun onTimeout() { }
+    }
+
+    private fun retryVosk() {
+        voskService = null
+        if (!running || inCall) return
+        Handler(Looper.getMainLooper()).postDelayed({
+            if (!running || inCall || voskService != null) return@postDelayed
+            val model = voskModel ?: return@postDelayed
+            try { armVosk(model); Log.i(TAG, "Vosk re-armed") }
+            catch (e: Exception) { Log.w(TAG, "Vosk re-arm failed: ${e.message}"); retryVosk() }
+        }, RETRY_MS)
+    }
+
+    // ── SpeechRecognizer (system service; hears DURING a call -> hang-up) ────────────────────
+    private fun startSR() {
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+            Log.w(TAG, "Speech recognition unavailable on this device")
+            return
+        }
+        try {
+            recognizer = SpeechRecognizer.createSpeechRecognizer(this).apply { setRecognitionListener(srListener) }
+            srListen()
+        } catch (e: Exception) {
+            Log.w(TAG, "SR start failed: ${e.message}")
+        }
+    }
+
+    private fun srListen() {
+        if (!running) return
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+        }
+        try { recognizer?.startListening(intent) } catch (_: Exception) { srRestart() }
+    }
+
+    private fun srRestart() {
+        if (!running) return
+        Handler(Looper.getMainLooper()).postDelayed({ srListen() }, 800)
+    }
+
+    private fun stopSR() {
+        try { recognizer?.cancel() } catch (_: Exception) {}
+        try { recognizer?.destroy() } catch (_: Exception) {}
+        recognizer = null
+    }
+
+    private val srListener = object : RecognitionListener {
+        override fun onResults(results: Bundle?) {
+            val hits = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION).orEmpty().map { it.lowercase() }
+            when {
+                hits.any { h -> hangupPhrases.any { h.contains(it) } } -> maybeFire(ACTION_HANGUP)
+                hits.any { h -> answerPhrases.any { h.contains(it) } } -> maybeFire(ACTION_ANSWER)
+            }
+            srRestart()
+        }
+        override fun onPartialResults(partialResults: Bundle?) {
+            val hits = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION).orEmpty().map { it.lowercase() }
+            if (hits.any { h -> hangupPhrases.any { h.contains(it) } }) maybeFire(ACTION_HANGUP)
+        }
+        override fun onError(error: Int) = srRestart()
+        override fun onReadyForSpeech(params: Bundle?) {}
+        override fun onBeginningOfSpeech() {}
+        override fun onRmsChanged(rmsdB: Float) {}
+        override fun onBufferReceived(buffer: ByteArray?) {}
+        override fun onEndOfSpeech() {}
+        override fun onEvent(eventType: Int, params: Bundle?) {}
     }
 
     private fun extract(hypothesis: String?, key: String): String =
@@ -198,66 +315,7 @@ class ListenerService : Service() {
         }
     }
 
-    private fun retryVosk() {
-        voskService = null
-        if (!running) return
-        Handler(Looper.getMainLooper()).postDelayed({
-            if (!running || voskService != null) return@postDelayed
-            val model = voskModel ?: return@postDelayed
-            try {
-                armVosk(model)
-                Log.i(TAG, "Vosk re-armed")
-            } catch (e: Exception) {
-                Log.w(TAG, "Vosk re-arm failed, will retry: ${e.message}")
-                retryVosk()
-            }
-        }, RETRY_MS)
-    }
-
-    // ── SpeechRecognizer (no-model fallback; CANNOT hear during a ring) ───────────────────────────
-    private fun startSpeechRecognizer() {
-        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
-            Log.w(TAG, "Speech recognition unavailable on this device")
-            return
-        }
-        recognizer = SpeechRecognizer.createSpeechRecognizer(this).apply { setRecognitionListener(listener) }
-        listen()
-    }
-
-    private fun listen() {
-        if (!running) return
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
-        }
-        try { recognizer?.startListening(intent) } catch (_: Exception) { restart() }
-    }
-
-    private fun restart() {
-        if (!running) return
-        Handler(Looper.getMainLooper()).postDelayed({ listen() }, 800)
-    }
-
-    private val listener = object : RecognitionListener {
-        override fun onResults(results: Bundle?) {
-            val hits = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION).orEmpty().map { it.lowercase() }
-            when {
-                hits.any { h -> hangupPhrases.any { h.contains(it) } } -> maybeFire(ACTION_HANGUP)
-                hits.any { h -> answerPhrases.any { h.contains(it) } } -> maybeFire(ACTION_ANSWER)
-            }
-            restart()
-        }
-        override fun onError(error: Int) = restart()
-        override fun onReadyForSpeech(params: Bundle?) {}
-        override fun onBeginningOfSpeech() {}
-        override fun onRmsChanged(rmsdB: Float) {}
-        override fun onBufferReceived(buffer: ByteArray?) {}
-        override fun onEndOfSpeech() {}
-        override fun onPartialResults(partialResults: Bundle?) {}
-        override fun onEvent(eventType: Int, params: Bundle?) {}
-    }
-
-    // ── Fire the command to MacroDroid ──────────────────────────────────────────────────────────
+    // ── Fire the command to MacroDroid ───────────────────────────────────────
     private fun maybeFire(action: String) {
         val now = SystemClock.elapsedRealtime()
         if (action == ACTION_ANSWER) {
@@ -287,13 +345,12 @@ class ListenerService : Service() {
         const val ACTION_ANSWER = "com.macvision.fridayphone.ANSWER"
         const val ACTION_HANGUP = "com.macvision.fridayphone.HANGUP"
 
-        /** Folder in assets/ holding the unpacked Vosk model (populated by the CI build step). */
+        /** Folder in assets/ holding the Vosk model (populated by the CI build step). */
         const val MODEL_ASSET = "model-en-us"
         const val SAMPLE_RATE = 16000.0f
-        const val COOLDOWN_MS = 3000L      // one phrase fires once, not on every partial frame
-        const val RETRY_MS = 2500L         // re-arm cadence while the mic is busy (during a call)
+        const val COOLDOWN_MS = 3000L
+        const val RETRY_MS = 2500L
 
-        /** The only utterances Vosk will decode — keeps keyword spotting fast and false-positives rare. */
         val GRAMMAR = listOf(
             "friday answer the call", "answer the call", "answer call", "pick up", "take the call",
             "friday hang up", "friday hang up now", "hang up", "end the call", "end call", "disconnect",
@@ -302,7 +359,6 @@ class ListenerService : Service() {
 
         private fun grammarJson(): String = GRAMMAR.joinToString(prefix = "[", postfix = "]") { "\"$it\"" }
 
-        /** Fire a command to MacroDroid: explicit broadcast to its package, plus an implicit one as backup. */
         fun sendCommand(ctx: Context, action: String) {
             ctx.sendBroadcast(Intent(action).setPackage(MACRODROID_PKG))
             ctx.sendBroadcast(Intent(action))
