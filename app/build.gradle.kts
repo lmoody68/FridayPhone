@@ -11,8 +11,8 @@ android {
         applicationId = "com.macvision.fridayphone"
         minSdk = 26
         targetSdk = 34
-        versionCode = 21
-        versionName = "0.9.1-callgate"
+        versionCode = 22
+        versionName = "0.9.2-release"
     }
 
     // Fixed signing key so every build has the SAME signature → updates install in place
@@ -31,6 +31,10 @@ android {
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // Sign release with the SAME stable key as debug → identical signature → still installs
+            // in place over the debug build. Release is non-debuggable, which removes the OS
+            // "Android App Compatibility / debuggable app" warning dialog.
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
     compileOptions {
