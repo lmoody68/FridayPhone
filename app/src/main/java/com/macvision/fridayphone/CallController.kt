@@ -9,6 +9,7 @@ import android.media.AudioManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.telecom.TelecomManager
 import android.util.Log
 import androidx.core.content.ContextCompat
@@ -98,7 +99,14 @@ object CallController {
      * UI shows the button (retrying only while it's not yet found, so we never toggle it back off), and
      * fall back to the audio API only if the button never appears.
      */
+    @Volatile private var lastSpeakerOn = 0L
+
     private fun speakerOn(ctx: Context) {
+        // A command can be heard twice (lingering audio) -> answer() runs twice -> two Speaker taps
+        // would TOGGLE the speaker back off. Only run one speaker sequence per call window.
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastSpeakerOn < 12_000L) return
+        lastSpeakerOn = now
         val h = Handler(Looper.getMainLooper())
         fun attempt(n: Int) {
             val ok = FridayA11yService.instance?.clickCallButton(

@@ -515,7 +515,7 @@ class ListenerService : Service() {
 
         const val MODEL_ASSET = "model-en-us"
         const val SAMPLE_RATE = 16000.0f
-        const val COOLDOWN_MS = 3000L
+        const val COOLDOWN_MS = 6000L   // wide enough that one spoken command, heard repeatedly, fires once
         const val RETRY_MS = 2500L
 
         // Only "friday <action>" phrases (+ [unk] to absorb everything else) so ambient audio doesn't map
