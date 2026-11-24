@@ -65,10 +65,12 @@ class ListenerService : Service() {
 
     private var lastAnswer = 0L
     private var lastHangup = 0L
+    private var lastVoicemail = 0L
 
     // Require the wake word "friday" + one of these, so the TV / ambient speech can't trip it.
     private val answerActions = listOf("answer", "pick up", "take the call")
     private val hangupActions = listOf("hang up", "hangup", "end call", "end the call", "disconnect", "drop the call", "drop")
+    private val voicemailActions = listOf("voicemail", "send to voice", "send it to voice", "send them to voice", "voice mail")
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -384,7 +386,8 @@ class ListenerService : Service() {
     private fun scan(text: String) {
         if (text.isBlank()) return
         if (!text.contains("friday")) {
-            if (answerActions.any { text.contains(it) } || hangupActions.any { text.contains(it) })
+            if (answerActions.any { text.contains(it) } || hangupActions.any { text.contains(it) } ||
+                voicemailActions.any { text.contains(it) })
                 Log.i(TAG, "ignored (no wake word): \"$text\"")
             return
         }
@@ -395,7 +398,10 @@ class ListenerService : Service() {
             if (hangupActions.any { text.contains(it) }) maybeFire(ACTION_HANGUP)
             return
         }
+        // Not in a call (idle or a call ringing): answer / send-to-voicemail / hang up.
+        // Check voicemail first — "send to voicemail" must not be swallowed by another match.
         when {
+            voicemailActions.any { text.contains(it) } -> maybeFire(ACTION_VOICEMAIL)
             hangupActions.any { text.contains(it) } -> maybeFire(ACTION_HANGUP)
             answerActions.any { text.contains(it) } -> maybeFire(ACTION_ANSWER)
         }
@@ -404,12 +410,16 @@ class ListenerService : Service() {
     // ── Fire the command to MacroDroid ───────────────────────────────────────
     private fun maybeFire(action: String) {
         val now = SystemClock.elapsedRealtime()
-        if (action == ACTION_ANSWER) {
-            if (now - lastAnswer < COOLDOWN_MS) return
-            lastAnswer = now
-        } else {
-            if (now - lastHangup < COOLDOWN_MS) return
-            lastHangup = now
+        val last = when (action) {
+            ACTION_ANSWER -> lastAnswer
+            ACTION_VOICEMAIL -> lastVoicemail
+            else -> lastHangup
+        }
+        if (now - last < COOLDOWN_MS) return
+        when (action) {
+            ACTION_ANSWER -> lastAnswer = now
+            ACTION_VOICEMAIL -> lastVoicemail = now
+            else -> lastHangup = now
         }
         fire(action)
     }
@@ -417,7 +427,11 @@ class ListenerService : Service() {
     private fun fire(action: String) {
         Log.i(TAG, "Wake-word -> $action")
         Handler(Looper.getMainLooper()).post {
-            val label = if (action == ACTION_ANSWER) "ANSWER" else "HANG UP"
+            val label = when (action) {
+                ACTION_ANSWER -> "ANSWER"
+                ACTION_VOICEMAIL -> "VOICEMAIL"
+                else -> "HANG UP"
+            }
             Toast.makeText(applicationContext, "Friday heard: $label", Toast.LENGTH_SHORT).show()
         }
         sendCommand(applicationContext, action)
@@ -427,9 +441,9 @@ class ListenerService : Service() {
         const val TAG = "FridayPhone"
         const val CHANNEL_ID = "friday_listener"
         const val NOTIF_ID = 1001
-        const val MACRODROID_PKG = "com.arlosoft.macrodroid"
         const val ACTION_ANSWER = "com.macvision.fridayphone.ANSWER"
         const val ACTION_HANGUP = "com.macvision.fridayphone.HANGUP"
+        const val ACTION_VOICEMAIL = "com.macvision.fridayphone.VOICEMAIL"
 
         const val MODEL_ASSET = "model-en-us"
         const val SAMPLE_RATE = 16000.0f
@@ -443,9 +457,12 @@ class ListenerService : Service() {
             "friday hang up", "friday hang up now", "friday hang up the call",
             "friday end the call", "friday end call", "friday disconnect",
             "friday disconnect the call", "friday disconnect call", "friday drop the call",
+            "friday send to voicemail", "friday send it to voicemail", "friday send them to voicemail",
+            "friday voicemail", "friday send the call to voicemail",
             "hey friday answer the call", "hey friday answer", "hey friday pick up",
             "hey friday hang up", "hey friday hang up the call", "hey friday end the call",
             "hey friday disconnect", "hey friday disconnect the call", "hey friday drop the call",
+            "hey friday send to voicemail", "hey friday send it to voicemail", "hey friday voicemail",
             "[unk]"
         )
 
@@ -464,9 +481,13 @@ class ListenerService : Service() {
         private fun grammarJson(): String = GRAMMAR.joinToString(prefix = "[", postfix = "]") { "\"$it\"" }
         private fun inCallGrammarJson(): String = IN_CALL_GRAMMAR.joinToString(prefix = "[", postfix = "]") { "\"$it\"" }
 
+        /** Perform the call action on the phone itself — Telecom API + Friday's accessibility taps. */
         fun sendCommand(ctx: Context, action: String) {
-            ctx.sendBroadcast(Intent(action).setPackage(MACRODROID_PKG))
-            ctx.sendBroadcast(Intent(action))
+            when (action) {
+                ACTION_ANSWER -> CallController.answer(ctx)
+                ACTION_HANGUP -> CallController.hangup(ctx)
+                ACTION_VOICEMAIL -> CallController.voicemail(ctx)
+            }
         }
 
         fun start(ctx: Context) {

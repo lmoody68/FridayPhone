@@ -9,6 +9,8 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- Answer / reject (send-to-voicemail) a ringing call via the Telecom API. -->
+    <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
 
     <application
         android:allowBackup="true"
@@ -33,6 +35,20 @@
             android:name=".ListenerService"
             android:exported="false"
             android:foregroundServiceType="microphone" />
+
+        <!-- Friday's hands: taps the call buttons (Google Voice "Hang up", incoming Accept/Decline). -->
+        <service
+            android:name=".FridayA11yService"
+            android:exported="false"
+            android:label="Friday call control"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/friday_a11y_config" />
+        </service>
 
         <!-- Restart the listener after reboot. -->
         <receiver

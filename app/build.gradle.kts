@@ -11,8 +11,8 @@ android {
         applicationId = "com.macvision.fridayphone"
         minSdk = 26
         targetSdk = 34
-        versionCode = 8
-        versionName = "0.6.1-hangup-grammar"
+        versionCode = 9
+        versionName = "0.7.0-callcontrol"
     }
 
     buildTypes {

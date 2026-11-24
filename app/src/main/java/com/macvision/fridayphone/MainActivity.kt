@@ -51,14 +51,28 @@ class MainActivity : AppCompatActivity() {
 
         b.btnBattery.setOnClickListener { requestBatteryExemption() }
 
-        // Diagnostics: fire the intents directly, bypassing the recognizer, to prove the MacroDroid wiring.
+        // Enable Friday's Accessibility Service (needed to tap Google Voice's "Hang up").
+        b.btnA11y.setOnClickListener {
+            try {
+                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                Toast.makeText(this, "Turn ON \"Friday call control\".", Toast.LENGTH_LONG).show()
+            } catch (_: Exception) {
+                Toast.makeText(this, "Open Settings → Accessibility → Friday call control.", Toast.LENGTH_LONG).show()
+            }
+        }
+
+        // Diagnostics: run each action directly, bypassing the recognizer, to prove the wiring.
         b.btnTestAnswer.setOnClickListener {
             ListenerService.sendCommand(this, ListenerService.ACTION_ANSWER)
-            Toast.makeText(this, "Sent ANSWER → MacroDroid", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Ran ANSWER", Toast.LENGTH_SHORT).show()
         }
         b.btnTestHangup.setOnClickListener {
             ListenerService.sendCommand(this, ListenerService.ACTION_HANGUP)
-            Toast.makeText(this, "Sent HANG UP → MacroDroid", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Ran HANG UP", Toast.LENGTH_SHORT).show()
+        }
+        b.btnTestVoicemail.setOnClickListener {
+            ListenerService.sendCommand(this, ListenerService.ACTION_VOICEMAIL)
+            Toast.makeText(this, "Ran SEND TO VOICEMAIL", Toast.LENGTH_SHORT).show()
         }
 
         b.btnProbe.setOnClickListener { startMicProbe() }
@@ -184,6 +198,9 @@ class MainActivity : AppCompatActivity() {
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
             != PackageManager.PERMISSION_GRANTED
         ) needed += Manifest.permission.POST_NOTIFICATIONS
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ANSWER_PHONE_CALLS)
+            != PackageManager.PERMISSION_GRANTED
+        ) needed += Manifest.permission.ANSWER_PHONE_CALLS
 
         if (needed.isEmpty()) {
             ListenerService.start(this)

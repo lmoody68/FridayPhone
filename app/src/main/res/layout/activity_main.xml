@@ -24,7 +24,7 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
             android:gravity="center"
-            android:text="Hands-free call control. Say &quot;Friday answer the call&quot; to pick up on speaker, or &quot;Friday hang up the call&quot; to end it. Works on Google Voice (VoIP) calls."
+            android:text="Hands-free call control, on the phone itself. Say &quot;Friday answer the call&quot; to pick up on speaker, &quot;Friday hang up the call&quot; to end it, or &quot;Friday send to voicemail&quot; to decline an incoming call."
             android:textSize="15sp" />
 
         <TextView
@@ -50,6 +50,13 @@
             android:layout_marginTop="12dp"
             android:text="Keep Friday alive (battery)" />
 
+        <Button
+            android:id="@+id/btnA11y"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="Enable Friday call control (accessibility)" />
+
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -71,6 +78,13 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
             android:text="Test: Hang up" />
+
+        <Button
+            android:id="@+id/btnTestVoicemail"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="Test: Send to voicemail" />
 
         <TextView
             android:layout_width="match_parent"
@@ -111,7 +125,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="32dp"
-            android:text="How it works:\n• Say &quot;Friday answer the call&quot; → answers on speaker\n• Say &quot;Friday hang up the call&quot; → ends the call\n\nMid-call voice hang-up works on Google Voice (VoIP) calls — Friday listens on the VOICE_COMMUNICATION mic, which stays open during a data call. On a plain carrier (cellular) call the OS silences all app mics, so place/receive through the Google Voice app for voice hang-up. These fire your MacroDroid macros; keep MacroDroid installed with its triggers enabled."
+            android:text="How it works:\n• &quot;Friday answer the call&quot; → answers on speaker\n• &quot;Friday hang up the call&quot; → ends the call\n• &quot;Friday send to voicemail&quot; → declines an incoming call\n\nFriday acts on the phone itself — no MacroDroid. Answer and send-to-voicemail use the phone's Telecom system (grant the Phone/ANSWER_PHONE_CALLS permission). Hang-up taps Google Voice's own End button, which needs Friday's Accessibility Service ON (tap the button above). Mid-call voice hang-up works on Google Voice (VoIP) calls, where the mic stays open during the call."
             android:textSize="14sp" />
     </LinearLayout>
 </ScrollView>
