@@ -11,8 +11,8 @@ android {
         applicationId = "com.macvision.fridayphone"
         minSdk = 26
         targetSdk = 34
-        versionCode = 17
-        versionName = "0.8.0-robust-ears"
+        versionCode = 18
+        versionName = "0.8.1-hangup-diag"
     }
 
     buildTypes {
