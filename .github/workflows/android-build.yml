@@ -20,6 +20,11 @@ jobs:
           rm -rf app/src/main/assets/model-en-us
           mkdir -p app/src/main/assets
           mv vosk-model-small-en-us-0.15 app/src/main/assets/model-en-us
+          # Vosk's StorageService.unpack REQUIRES a 'uuid' file in the model dir (it versions the
+          # unpacked copy by it). The small model ships WITHOUT one, so unpack throws
+          # "model-en-us/uuid" and the app silently falls back to Google SODA (can't hear a ring).
+          # Creating it here is the fix.
+          echo "vosk-model-small-en-us-0.15" > app/src/main/assets/model-en-us/uuid
           echo "Model contents:" && ls app/src/main/assets/model-en-us
 
       - name: Set up JDK 17
