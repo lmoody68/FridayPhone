@@ -30,18 +30,14 @@ import org.vosk.android.StorageService
 import org.vosk.android.RecognitionListener as VoskListener
 
 /**
- * Friday Phone — the "ears" (dual-engine).
+ * Friday Phone — the "ears" (dual-engine, wake-word gated).
  *
- * ANSWER (the ring): Vosk, offline, direct AudioRecord — hears the phrase over the ringtone because the
- * mic is still free until the call connects.
+ * ANSWER (the ring): Vosk, offline — hears the phrase over the ringtone (mic free until the call connects).
+ * HANG UP (during a call): system SpeechRecognizer — a privileged service that can hear mid-call when a
+ * third-party app's own AudioRecord (Vosk) cannot. We switch engines on call state (AudioManager mode).
  *
- * HANG UP (during a call): Android's system SpeechRecognizer. A third-party app's OWN AudioRecord (Vosk) is
- * blocked from the mic once a call is active, but the system recognizer runs in a privileged service that
- * CAN hear you mid-call — this is what worked in v0.2. So when a call goes active we hand off from Vosk to
- * SpeechRecognizer, and switch back to Vosk when the call ends.
- *
- * Call-active is detected via AudioManager mode (MODE_IN_CALL / MODE_IN_COMMUNICATION) — no extra permission.
- * Both engines broadcast the same intents that MacroDroid's "Intent Received" triggers catch.
+ * To act, the recognized text must contain the wake word "friday" AND a command word — otherwise ambient
+ * audio (a TV) trips the tiny grammar. The Vosk grammar itself only holds "friday <action>" phrases + [unk].
  */
 class ListenerService : Service() {
 
@@ -51,7 +47,6 @@ class ListenerService : Service() {
     private var recognizer: SpeechRecognizer? = null
     private var running = false
 
-    // Dual-engine state.
     private var inCall = false
     private var audioManager: AudioManager? = null
     private var modeListener: AudioManager.OnModeChangedListener? = null
@@ -59,8 +54,9 @@ class ListenerService : Service() {
     private var lastAnswer = 0L
     private var lastHangup = 0L
 
-    private val answerPhrases = listOf("answer the call", "answer call", "friday answer", "pick up", "take the call")
-    private val hangupPhrases = listOf("hang up", "hangup", "end the call", "end call", "disconnect", "drop the call")
+    // Require the wake word "friday" + one of these, so the TV / ambient speech can't trip it.
+    private val answerActions = listOf("answer", "pick up", "take the call")
+    private val hangupActions = listOf("hang up", "hangup", "end call", "end the call", "disconnect", "drop the call", "drop")
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -137,7 +133,6 @@ class ListenerService : Service() {
         stopSR()
     }
 
-    /** Vosk is the idle/ring engine (answers the call). Never run it during an active call. */
     private fun startVoskEngine() {
         if (!running || inCall) return
         if (hasVoskModel()) startVosk() else startSR()
@@ -223,7 +218,6 @@ class ListenerService : Service() {
         voskService = null
         try { voskRecognizer?.close() } catch (_: Exception) {}
         voskRecognizer = null
-        // keep voskModel loaded for a fast re-arm after the call
     }
 
     private val voskCallback = object : VoskListener {
@@ -284,16 +278,11 @@ class ListenerService : Service() {
 
     private val srListener = object : RecognitionListener {
         override fun onResults(results: Bundle?) {
-            val hits = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION).orEmpty().map { it.lowercase() }
-            when {
-                hits.any { h -> hangupPhrases.any { h.contains(it) } } -> maybeFire(ACTION_HANGUP)
-                hits.any { h -> answerPhrases.any { h.contains(it) } } -> maybeFire(ACTION_ANSWER)
-            }
+            results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION).orEmpty().forEach { scan(it.lowercase()) }
             srRestart()
         }
         override fun onPartialResults(partialResults: Bundle?) {
-            val hits = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION).orEmpty().map { it.lowercase() }
-            if (hits.any { h -> hangupPhrases.any { h.contains(it) } }) maybeFire(ACTION_HANGUP)
+            partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION).orEmpty().forEach { scan(it.lowercase()) }
         }
         override fun onError(error: Int) = srRestart()
         override fun onReadyForSpeech(params: Bundle?) {}
@@ -307,11 +296,18 @@ class ListenerService : Service() {
     private fun extract(hypothesis: String?, key: String): String =
         (try { JSONObject(hypothesis ?: "{}").optString(key, "") } catch (_: Exception) { "" }).lowercase()
 
+    /** Fire only on wake word "friday" + a command; log what we heard so false matches are diagnosable. */
     private fun scan(text: String) {
         if (text.isBlank()) return
+        if (!text.contains("friday")) {
+            if (answerActions.any { text.contains(it) } || hangupActions.any { text.contains(it) })
+                Log.i(TAG, "ignored (no wake word): \"$text\"")
+            return
+        }
+        Log.i(TAG, "heard: \"$text\"")
         when {
-            answerPhrases.any { text.contains(it) } -> maybeFire(ACTION_ANSWER)
-            hangupPhrases.any { text.contains(it) } -> maybeFire(ACTION_HANGUP)
+            hangupActions.any { text.contains(it) } -> maybeFire(ACTION_HANGUP)
+            answerActions.any { text.contains(it) } -> maybeFire(ACTION_ANSWER)
         }
     }
 
@@ -345,15 +341,17 @@ class ListenerService : Service() {
         const val ACTION_ANSWER = "com.macvision.fridayphone.ANSWER"
         const val ACTION_HANGUP = "com.macvision.fridayphone.HANGUP"
 
-        /** Folder in assets/ holding the Vosk model (populated by the CI build step). */
         const val MODEL_ASSET = "model-en-us"
         const val SAMPLE_RATE = 16000.0f
         const val COOLDOWN_MS = 3000L
         const val RETRY_MS = 2500L
 
+        // Only "friday <action>" phrases (+ [unk] to absorb everything else) so ambient audio doesn't map
+        // onto a bare command. Matching ALSO requires "friday" + an action word (see scan()).
         val GRAMMAR = listOf(
-            "friday answer the call", "answer the call", "answer call", "pick up", "take the call",
-            "friday hang up", "friday hang up now", "hang up", "end the call", "end call", "disconnect",
+            "friday answer the call", "friday answer", "friday pick up", "friday take the call",
+            "friday hang up", "friday hang up now", "friday end the call", "friday end call",
+            "friday disconnect", "friday disconnect the call", "friday drop the call",
             "[unk]"
         )
 
