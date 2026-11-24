@@ -11,8 +11,8 @@ android {
         applicationId = "com.macvision.fridayphone"
         minSdk = 26
         targetSdk = 34
-        versionCode = 20
-        versionName = "0.9.0-assistant"
+        versionCode = 21
+        versionName = "0.9.1-callgate"
     }
 
     // Fixed signing key so every build has the SAME signature → updates install in place

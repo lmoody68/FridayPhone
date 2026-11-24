@@ -429,6 +429,16 @@ class ListenerService : Service() {
 
     // ── Fire the command to MacroDroid ───────────────────────────────────────
     private fun maybeFire(action: String) {
+        // Only act when the phone is actually in the matching call state. Friday is always listening,
+        // so without this a command word in ordinary speech (e.g. dictating to another app) fires a
+        // phantom action + spoken confirmation ("Connecting now, sir") with no call present.
+        val active = inCall || isCallActive()
+        val ringingNow = ringing || (audioManager?.mode == AudioManager.MODE_RINGTONE)
+        val relevant = if (action == ACTION_HANGUP) active else ringingNow
+        if (!relevant) {
+            Log.i(TAG, "$action ignored — no call (ringing=$ringingNow active=$active)")
+            return
+        }
         val now = SystemClock.elapsedRealtime()
         val last = when (action) {
             ACTION_ANSWER -> lastAnswer
