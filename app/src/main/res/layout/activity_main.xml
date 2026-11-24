@@ -75,6 +75,41 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:layout_marginTop="28dp"
+            android:text="— Mic Probe (run DURING a live call) —"
+            android:textStyle="bold"
+            android:gravity="center" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:gravity="center"
+            android:text="Get on a call (speaker ON), tap Probe, then TALK out loud nonstop for ~15s. It tests every mic source and shows if Android feeds Friday your voice or silence."
+            android:textSize="13sp" />
+
+        <Button
+            android:id="@+id/btnProbe"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="🔬 Probe mic (during a call)" />
+
+        <TextView
+            android:id="@+id/txtProbe"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:padding="10dp"
+            android:background="#111111"
+            android:textColor="#00FF66"
+            android:fontFamily="monospace"
+            android:textSize="13sp"
+            android:text="(probe results appear here)" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
             android:layout_marginTop="32dp"
             android:text="How it works:\n• Say &quot;Friday answer the call&quot; → answers on speaker\n• Shake the phone → hangs up (works even during a call)\n\nVoice hang-up (&quot;Friday hang up&quot;) also works when you are NOT already on a call — Android blocks the mic for any app during an active call, so shake is the reliable hang-up. These fire your MacroDroid macros; keep MacroDroid installed with both triggers enabled."
             android:textSize="14sp" />

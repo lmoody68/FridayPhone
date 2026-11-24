@@ -1,8 +1,12 @@
 package com.macvision.fridayphone
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaRecorder
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -13,6 +17,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.macvision.fridayphone.databinding.ActivityMainBinding
+import kotlin.math.abs
+import kotlin.math.sqrt
 
 class MainActivity : AppCompatActivity() {
 
@@ -54,6 +60,114 @@ class MainActivity : AppCompatActivity() {
             ListenerService.sendCommand(this, ListenerService.ACTION_HANGUP)
             Toast.makeText(this, "Sent HANG UP → MacroDroid", Toast.LENGTH_SHORT).show()
         }
+
+        b.btnProbe.setOnClickListener { startMicProbe() }
+    }
+
+    // ---- Mic probe: measure, source by source, whether Android feeds us real audio
+    //      or silence during a live call. Results shown on screen (screenshot it). ----
+    @Volatile private var probing = false
+
+    private data class Src(val id: Int, val name: String)
+
+    private val probeSources = listOf(
+        Src(MediaRecorder.AudioSource.DEFAULT, "DEFAULT"),
+        Src(MediaRecorder.AudioSource.MIC, "MIC"),
+        Src(MediaRecorder.AudioSource.VOICE_RECOGNITION, "VOICE_RECOGNITION"),
+        Src(MediaRecorder.AudioSource.VOICE_COMMUNICATION, "VOICE_COMMUNICATION"),
+        Src(MediaRecorder.AudioSource.CAMCORDER, "CAMCORDER"),
+        Src(MediaRecorder.AudioSource.VOICE_CALL, "VOICE_CALL"),
+        Src(2 /*VOICE_UPLINK*/, "VOICE_UPLINK"),
+        Src(3 /*VOICE_DOWNLINK*/, "VOICE_DOWNLINK")
+    )
+
+    private fun startMicProbe() {
+        if (probing) return
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            permLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO))
+            Toast.makeText(this, "Grant mic, then tap Probe again.", Toast.LENGTH_LONG).show()
+            return
+        }
+        // Free the mic from our own listener so the probe reads cleanly.
+        ListenerService.stop(this)
+        probing = true
+        b.txtProbe.text = "Probing… TALK OUT LOUD now, nonstop, until it finishes.\n"
+        Thread { runMicProbe() }.start()
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun runMicProbe() {
+        val sb = StringBuilder("Probing… TALK OUT LOUD now, nonstop.\n\n")
+        val rate = 16000
+        val minBuf = AudioRecord.getMinBufferSize(
+            rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
+        ).coerceAtLeast(rate) // ~0.5s floor
+        var bestName: String? = null
+        var bestPeak = 0
+
+        for (s in probeSources) {
+            var line: String
+            var rec: AudioRecord? = null
+            try {
+                rec = AudioRecord(
+                    s.id, rate, AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT, minBuf * 2
+                )
+                if (rec.state != AudioRecord.STATE_INITIALIZED) {
+                    line = "%-20s  —  init FAILED (blocked)".format(s.name)
+                } else {
+                    rec.startRecording()
+                    val buf = ShortArray(minBuf)
+                    var peak = 0
+                    var sumSq = 0.0
+                    var count = 0L
+                    val until = System.currentTimeMillis() + 1500 // ~1.5s per source
+                    while (System.currentTimeMillis() < until) {
+                        val n = rec.read(buf, 0, buf.size)
+                        if (n > 0) {
+                            for (i in 0 until n) {
+                                val v = abs(buf[i].toInt())
+                                if (v > peak) peak = v
+                                sumSq += v.toDouble() * v
+                                count++
+                            }
+                        }
+                    }
+                    rec.stop()
+                    val rms = if (count > 0) sqrt(sumSq / count).toInt() else 0
+                    val verdict = when {
+                        peak >= 1500 -> "✅ LIVE (hears you!)"
+                        peak >= 300  -> "~ faint"
+                        else         -> "✖ silenced/zeros"
+                    }
+                    line = "%-20s peak=%-6d rms=%-5d %s".format(s.name, peak, rms, verdict)
+                    if (peak > bestPeak) { bestPeak = peak; bestName = s.name }
+                }
+            } catch (e: Exception) {
+                line = "%-20s  —  ERROR ${e.javaClass.simpleName}".format(s.name)
+            } finally {
+                try { rec?.release() } catch (_: Exception) {}
+            }
+            sb.append(line).append('\n')
+            val snapshot = sb.toString()
+            runOnUiThread { b.txtProbe.text = snapshot }
+        }
+
+        val summary = if (bestName != null && bestPeak >= 1500)
+            "\n★ RESULT: \"$bestName\" gets your voice during the call (peak=$bestPeak).\n" +
+            "→ On-phone voice hang-up IS possible. Send Friday this screenshot."
+        else
+            "\n★ RESULT: every source silenced (best peak=$bestPeak).\n" +
+            "→ OS lock confirmed on your phone. Send Friday this screenshot."
+        sb.append(summary)
+        val finalText = sb.toString()
+        runOnUiThread {
+            b.txtProbe.text = finalText
+            Toast.makeText(this, "Probe done — screenshot the green panel.", Toast.LENGTH_LONG).show()
+        }
+        probing = false
     }
 
     override fun onResume() {
