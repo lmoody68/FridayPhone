@@ -26,6 +26,15 @@ import androidx.core.content.ContextCompat
  */
 object CallController {
 
+    // Friday's accessibility taps are confined to these packages — real call screens only, never
+    // whatever app happens to be in the foreground (e.g. the Claude app).
+    private val CALL_PKGS = listOf(
+        "com.google.android.apps.googlevoice",
+        "com.samsung.android.incallui", "com.android.incallui",
+        "com.samsung.android.dialer", "com.android.dialer",
+        "com.android.systemui"
+    )
+
     private fun hasAnswerPerm(ctx: Context): Boolean =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.O ||
             ContextCompat.checkSelfPermission(ctx, Manifest.permission.ANSWER_PHONE_CALLS) ==
@@ -47,7 +56,7 @@ object CallController {
         if (!ok) {
             ok = FridayA11yService.instance?.clickCallButton(
                 listOf("com.android.systemui:id/accept_btn", "com.android.incallui:id/answer_video_button"),
-                listOf("Accept", "Answer")
+                listOf("Accept", "Answer"), CALL_PKGS
             ) ?: false
         }
         speakerOn(ctx)
@@ -67,7 +76,7 @@ object CallController {
         if (!ok) {
             ok = FridayA11yService.instance?.clickCallButton(
                 listOf("com.android.systemui:id/end_call_btn", "com.android.incallui:id/decline_button"),
-                listOf("End call", "Decline", "Ignore", "Reject")
+                listOf("End call", "Decline", "Ignore", "Reject"), CALL_PKGS
             ) ?: false
         }
         Log.i(ListenerService.TAG, "CallController.voicemail -> $ok")
@@ -78,8 +87,9 @@ object CallController {
         Voice.init(ctx); Voice.say("Call disconnected, sir.")
         // Google Voice VoIP first: tap its own "Hang up" (endCall() can't end a self-managed VoIP call).
         var ok = FridayA11yService.instance?.clickCallButton(
-            listOf("com.android.systemui:id/end_call_btn"),
-            listOf("Hang up", "End call", "Leave call")
+            listOf("com.android.systemui:id/end_call_btn", "com.android.incallui:id/end_button",
+                   "com.samsung.android.incallui:id/end_button"),
+            listOf("Hang up", "End call", "Leave call", "End"), CALL_PKGS
         ) ?: false
         if (!ok) {
             val tm = telecom(ctx)
@@ -110,7 +120,7 @@ object CallController {
         val h = Handler(Looper.getMainLooper())
         fun attempt(n: Int) {
             val ok = FridayA11yService.instance?.clickCallButton(
-                emptyList(), listOf("Speaker", "Speakerphone")
+                emptyList(), listOf("Speaker", "Speakerphone"), CALL_PKGS
             ) ?: false
             if (ok) { Log.i(ListenerService.TAG, "speaker: tapped Speaker button"); return }
             if (n < 4) {

@@ -37,66 +37,73 @@ class FridayA11yService : AccessibilityService() {
      * (case-insensitive contains) and click it (or its nearest clickable ancestor). Returns true on
      * the first successful click.
      */
-    fun clickCallButton(resIds: List<String>, descs: List<String>): Boolean {
+    fun clickCallButton(resIds: List<String>, descs: List<String>, pkgs: List<String> = emptyList()): Boolean {
         val roots = ArrayList<AccessibilityNodeInfo>()
         try { rootInActiveWindow?.let { roots.add(it) } } catch (_: Exception) {}
         try { windows?.forEach { w -> try { w.root?.let { roots.add(it) } } catch (_: Exception) {} } } catch (_: Exception) {}
 
-        // 1) by resource-id (most precise — the systemui call buttons expose real ids)
-        for (root in roots) {
-            for (id in resIds) {
-                try {
-                    val found = root.findAccessibilityNodeInfosByViewId(id) ?: continue
-                    for (n in found) if (clickNodeOrAncestor(n)) {
-                        Log.i(ListenerService.TAG, "a11y clicked id=$id"); return true
-                    }
-                } catch (_: Exception) {}
-            }
+        // Always log the candidate clickables (restricted to the allowed packages) so the real
+        // End button can be identified even when a match is wrong.
+        logClickables(roots, pkgs)
+
+        // 1) by resource-id — only inside the allowed packages (never a random foreground app)
+        for (root in roots) for (id in resIds) {
+            try {
+                root.findAccessibilityNodeInfosByViewId(id)?.forEach { n ->
+                    if (pkgOk(n, pkgs) && clickNodeOrAncestor(n)) { logClicked("id=$id", n); return true }
+                }
+            } catch (_: Exception) {}
         }
-        // 2) by content-description / text (GV's Compose "Hang up" has no id)
+        // 2) by content-description / text
         val lower = descs.map { it.lowercase() }
         for (root in roots) {
-            val n = findByDesc(root, lower)
-            if (n != null && clickNodeOrAncestor(n)) {
-                Log.i(ListenerService.TAG, "a11y clicked desc match"); return true
-            }
+            val n = findByDesc(root, lower, pkgs)
+            if (n != null && clickNodeOrAncestor(n)) { logClicked("desc", n); return true }
         }
-        // 3) aggressive: any clickable node whose id/desc/text contains an "end call" keyword
+        // 3) aggressive: any clickable node whose id/desc/text contains an end-call keyword
         val endish = listOf("end call", "end_call", "endcall", "hang up", "hangup", "hang_up",
                             "disconnect", "end button", "endbutton", "leave call", "reject")
         for (root in roots) {
-            val n = findEndish(root, endish)
-            if (n != null && clickNodeOrAncestor(n)) {
-                Log.i(ListenerService.TAG, "a11y clicked endish match"); return true
-            }
+            val n = findEndish(root, endish, pkgs)
+            if (n != null && clickNodeOrAncestor(n)) { logClicked("endish", n); return true }
         }
-        // 4) nothing matched — log everything we CAN see so the real button can be identified
-        logClickables(roots)
         Log.w(ListenerService.TAG, "a11y: no matching call button found")
         return false
     }
 
-    /** Any clickable node whose resource-id, content-desc or text contains an end-call keyword. */
-    private fun findEndish(node: AccessibilityNodeInfo?, keys: List<String>): AccessibilityNodeInfo? {
+    /** True if no package filter, or the node belongs to one of the allowed packages. */
+    private fun pkgOk(n: AccessibilityNodeInfo?, pkgs: List<String>): Boolean {
+        if (pkgs.isEmpty()) return true
+        val p = n?.packageName?.toString() ?: return false
+        return pkgs.any { p == it || p.contains(it) }
+    }
+
+    private fun logClicked(how: String, n: AccessibilityNodeInfo?) {
+        Log.i(ListenerService.TAG, "a11y CLICKED ($how) pkg=${n?.packageName} id=${n?.viewIdResourceName} " +
+            "desc='${n?.contentDescription}' text='${n?.text}' cls=${n?.className}")
+    }
+
+    /** Any clickable node (in an allowed package) whose id/desc/text contains an end-call keyword. */
+    private fun findEndish(node: AccessibilityNodeInfo?, keys: List<String>, pkgs: List<String>): AccessibilityNodeInfo? {
         if (node == null) return null
-        if (node.isClickable) {
+        if (node.isClickable && pkgOk(node, pkgs)) {
             val hay = ((node.viewIdResourceName ?: "") + "|" +
                        (node.contentDescription ?: "") + "|" + (node.text ?: "")).lowercase()
             if (keys.any { hay.contains(it) }) return node
         }
         for (i in 0 until node.childCount) {
-            val r = findEndish(node.getChild(i), keys)
+            val r = findEndish(node.getChild(i), keys, pkgs)
             if (r != null) return r
         }
         return null
     }
 
-    /** Diagnostic: log every clickable node across the given roots (pkg/id/desc/text/bounds). */
-    private fun logClickables(roots: List<AccessibilityNodeInfo>) {
+    /** Diagnostic: log clickable nodes (restricted to the allowed packages) — pkg/id/desc/text/bounds. */
+    private fun logClickables(roots: List<AccessibilityNodeInfo>, pkgs: List<String>) {
         var count = 0
         fun walk(n: AccessibilityNodeInfo?) {
             if (n == null || count > 80) return
-            if (n.isClickable) {
+            if (n.isClickable && pkgOk(n, pkgs)) {
                 val b = android.graphics.Rect(); n.getBoundsInScreen(b)
                 Log.i(ListenerService.TAG, "NODE pkg=${n.packageName} id=${n.viewIdResourceName} " +
                     "desc='${n.contentDescription}' text='${n.text}' cls=${n.className} bounds=$b")
@@ -104,18 +111,20 @@ class FridayA11yService : AccessibilityService() {
             }
             for (i in 0 until n.childCount) walk(n.getChild(i))
         }
-        Log.i(ListenerService.TAG, "=== a11y clickable nodes dump (roots=${roots.size}) ===")
+        Log.i(ListenerService.TAG, "=== a11y clickables in call pkgs (roots=${roots.size}) ===")
         for (r in roots) walk(r)
     }
 
-    private fun findByDesc(node: AccessibilityNodeInfo?, descsLower: List<String>): AccessibilityNodeInfo? {
+    private fun findByDesc(node: AccessibilityNodeInfo?, descsLower: List<String>, pkgs: List<String>): AccessibilityNodeInfo? {
         if (node == null) return null
-        val cd = node.contentDescription?.toString()?.lowercase()
-        val tx = node.text?.toString()?.lowercase()                 // some controls (Samsung "Speaker") label by text
-        if ((cd != null && descsLower.any { cd.contains(it) }) ||
-            (tx != null && descsLower.any { tx.contains(it) })) return node
+        if (pkgOk(node, pkgs)) {
+            val cd = node.contentDescription?.toString()?.lowercase()
+            val tx = node.text?.toString()?.lowercase()             // some controls (Samsung "Speaker") label by text
+            if ((cd != null && descsLower.any { cd.contains(it) }) ||
+                (tx != null && descsLower.any { tx.contains(it) })) return node
+        }
         for (i in 0 until node.childCount) {
-            val r = findByDesc(node.getChild(i), descsLower)
+            val r = findByDesc(node.getChild(i), descsLower, pkgs)
             if (r != null) return r
         }
         return null

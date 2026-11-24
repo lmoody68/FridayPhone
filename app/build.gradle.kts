@@ -11,8 +11,20 @@ android {
         applicationId = "com.macvision.fridayphone"
         minSdk = 26
         targetSdk = 34
-        versionCode = 18
-        versionName = "0.8.1-hangup-diag"
+        versionCode = 19
+        versionName = "0.8.2-callpkg-signed"
+    }
+
+    // Fixed signing key so every build has the SAME signature → updates install in place
+    // (no uninstall), which keeps the accessibility service enabled and permissions granted.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("friday.keystore")
+            storePassword = "fridaykey"
+            keyAlias = "friday"
+            keyPassword = "fridaykey"
+            storeType = "PKCS12"
+        }
     }
 
     buildTypes {
