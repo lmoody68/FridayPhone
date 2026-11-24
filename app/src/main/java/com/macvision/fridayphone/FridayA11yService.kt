@@ -68,7 +68,9 @@ class FridayA11yService : AccessibilityService() {
     private fun findByDesc(node: AccessibilityNodeInfo?, descsLower: List<String>): AccessibilityNodeInfo? {
         if (node == null) return null
         val cd = node.contentDescription?.toString()?.lowercase()
-        if (cd != null && descsLower.any { cd.contains(it) }) return node
+        val tx = node.text?.toString()?.lowercase()                 // some controls (Samsung "Speaker") label by text
+        if ((cd != null && descsLower.any { cd.contains(it) }) ||
+            (tx != null && descsLower.any { tx.contains(it) })) return node
         for (i in 0 until node.childCount) {
             val r = findByDesc(node.getChild(i), descsLower)
             if (r != null) return r

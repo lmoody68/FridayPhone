@@ -49,7 +49,7 @@ object CallController {
                 listOf("Accept", "Answer")
             ) ?: false
         }
-        enableSpeakerSoon(ctx)
+        speakerOn(ctx)
         Log.i(ListenerService.TAG, "CallController.answer -> $ok")
     }
 
@@ -91,17 +91,33 @@ object CallController {
         Log.i(ListenerService.TAG, "CallController.hangup -> $ok")
     }
 
-    /** Route call audio to the loudspeaker. Retried a few times as the call transitions to active. */
-    private fun enableSpeakerSoon(ctx: Context) {
-        val am = ctx.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+    /**
+     * Turn on speakerphone after answering. On a Samsung native call the dialer owns audio routing,
+     * so the AudioManager API alone won't move it to the loudspeaker — the reliable way is to tap the
+     * dialer's own "Speaker" button (same approach as hang-up). We tap it ONCE, the moment the in-call
+     * UI shows the button (retrying only while it's not yet found, so we never toggle it back off), and
+     * fall back to the audio API only if the button never appears.
+     */
+    private fun speakerOn(ctx: Context) {
         val h = Handler(Looper.getMainLooper())
-        for (delay in listOf(500L, 1300L, 2500L)) {
-            h.postDelayed({ setSpeaker(am) }, delay)
+        fun attempt(n: Int) {
+            val ok = FridayA11yService.instance?.clickCallButton(
+                emptyList(), listOf("Speaker", "Speakerphone")
+            ) ?: false
+            if (ok) { Log.i(ListenerService.TAG, "speaker: tapped Speaker button"); return }
+            if (n < 4) {
+                h.postDelayed({ attempt(n + 1) }, 900)
+            } else {
+                setSpeaker(ctx.getSystemService(Context.AUDIO_SERVICE) as? AudioManager)
+                Log.w(ListenerService.TAG, "speaker: UI button not found, tried audio API")
+            }
         }
+        h.postDelayed({ attempt(0) }, 1000)
     }
 
     @Suppress("DEPRECATION")
-    private fun setSpeaker(am: AudioManager) {
+    private fun setSpeaker(am: AudioManager?) {
+        if (am == null) return
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 val spk = am.availableCommunicationDevices.firstOrNull {
