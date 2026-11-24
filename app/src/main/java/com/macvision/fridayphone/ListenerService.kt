@@ -54,6 +54,7 @@ class ListenerService : Service() {
     private var running = false
 
     private var inCall = false
+    @Volatile private var ringing = false
     private var audioManager: AudioManager? = null
     private var modeListener: AudioManager.OnModeChangedListener? = null
 
@@ -177,6 +178,7 @@ class ListenerService : Service() {
     }
 
     private fun onAudioMode(mode: Int) {
+        ringing = (mode == AudioManager.MODE_RINGTONE)   // incoming call ringing (ringtone drowns the wake word)
         val active = (mode == AudioManager.MODE_IN_CALL || mode == AudioManager.MODE_IN_COMMUNICATION)
         if (active && !inCall) {
             inCall = true
@@ -387,6 +389,14 @@ class ListenerService : Service() {
     private fun scan(text: String) {
         if (text.isBlank()) return
         if (!text.contains("friday")) {
+            // A loud incoming ringtone garbles "friday" into Vosk's [unk] token. During that short,
+            // intentional ring window, accept answer / send-to-voicemail that rides an [unk].
+            if (ringing && text.contains("[unk]")) {
+                when {
+                    voicemailActions.any { text.contains(it) } -> { Log.i(TAG, "ring-gate -> VOICEMAIL: \"$text\""); maybeFire(ACTION_VOICEMAIL); return }
+                    answerActions.any { text.contains(it) } -> { Log.i(TAG, "ring-gate -> ANSWER: \"$text\""); maybeFire(ACTION_ANSWER); return }
+                }
+            }
             if (answerActions.any { text.contains(it) } || hangupActions.any { text.contains(it) } ||
                 voicemailActions.any { text.contains(it) })
                 Log.i(TAG, "ignored (no wake word): \"$text\"")
