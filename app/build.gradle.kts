@@ -11,8 +11,8 @@ android {
         applicationId = "com.macvision.fridayphone"
         minSdk = 26
         targetSdk = 34
-        versionCode = 10
-        versionName = "0.7.1-voice"
+        versionCode = 11
+        versionName = "0.7.2-voice-google"
     }
 
     buildTypes {

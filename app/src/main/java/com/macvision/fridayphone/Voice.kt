@@ -9,10 +9,15 @@ import java.util.Locale
 /**
  * Friday's mouth. A single on-device TextToSpeech engine that speaks a short confirmation when a
  * call action fires ("Connecting now, sir." / "Call disconnected, sir." / "Sending to voicemail,
- * sir."). British English, a female voice where the device has one — to match Friday. Anything
- * spoken before the engine is ready is queued and flushed on init.
+ * sir."). British English, a female voice where the device has one.
+ *
+ * The device default engine on this A15 is Samsung TTS, which REFUSES to bind to a third-party app
+ * ("not allowed to bind to private engine [-4]"), so we ask for Google TTS explicitly and fall back
+ * to the default only if Google is unavailable. Anything spoken before the engine is ready is queued.
  */
 object Voice {
+
+    private const val GOOGLE_TTS = "com.google.android.tts"
 
     private var tts: TextToSpeech? = null
     @Volatile private var ready = false
@@ -20,33 +25,47 @@ object Voice {
 
     fun init(ctx: Context) {
         if (tts != null) return
-        tts = TextToSpeech(ctx.applicationContext) { status ->
+        initWith(ctx.applicationContext, GOOGLE_TTS)
+    }
+
+    private fun initWith(appCtx: Context, engine: String?) {
+        val listener = TextToSpeech.OnInitListener { status ->
             if (status == TextToSpeech.SUCCESS) {
-                val t = tts
-                try { t?.language = Locale.UK } catch (_: Exception) {}
-                try {
-                    t?.setAudioAttributes(
-                        AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_ASSISTANT)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                            .build()
-                    )
-                } catch (_: Exception) {}
-                try {
-                    val v = t?.voices?.firstOrNull {
-                        (it.locale?.language == "en") &&
-                            (it.name?.contains("gb", true) == true) &&
-                            (it.name?.contains("female", true) == true || it.name?.contains("fml", true) == true)
-                    }
-                    if (v != null) t?.voice = v
-                } catch (_: Exception) {}
+                configure()
                 ready = true
                 synchronized(pending) { pending.forEach { utter(it) }; pending.clear() }
-                Log.i(ListenerService.TAG, "Friday voice ready")
+                Log.i(ListenerService.TAG, "Friday voice ready (engine=${engine ?: "default"})")
             } else {
-                Log.w(ListenerService.TAG, "TTS init failed: $status")
+                Log.w(ListenerService.TAG, "TTS init failed ($status) engine=${engine ?: "default"}")
+                if (engine != null) {                       // Google unavailable → try the device default once
+                    try { tts?.shutdown() } catch (_: Exception) {}
+                    tts = null
+                    initWith(appCtx, null)
+                }
             }
         }
+        tts = if (engine != null) TextToSpeech(appCtx, listener, engine) else TextToSpeech(appCtx, listener)
+    }
+
+    private fun configure() {
+        val t = tts ?: return
+        try { t.language = Locale.UK } catch (_: Exception) {}
+        try {
+            t.setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build()
+            )
+        } catch (_: Exception) {}
+        try {
+            val v = t.voices?.firstOrNull {
+                (it.locale?.language == "en") &&
+                    (it.name?.contains("gb", true) == true) &&
+                    (it.name?.contains("female", true) == true || it.name?.contains("fml", true) == true)
+            }
+            if (v != null) t.voice = v
+        } catch (_: Exception) {}
     }
 
     fun say(text: String) {
