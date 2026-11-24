@@ -37,7 +37,8 @@ class FridayA11yService : AccessibilityService() {
      * (case-insensitive contains) and click it (or its nearest clickable ancestor). Returns true on
      * the first successful click.
      */
-    fun clickCallButton(resIds: List<String>, descs: List<String>, pkgs: List<String> = emptyList()): Boolean {
+    fun clickCallButton(resIds: List<String>, descs: List<String>, pkgs: List<String> = emptyList(),
+                        allowEndish: Boolean = false): Boolean {
         val roots = ArrayList<AccessibilityNodeInfo>()
         try { rootInActiveWindow?.let { roots.add(it) } } catch (_: Exception) {}
         try { windows?.forEach { w -> try { w.root?.let { roots.add(it) } } catch (_: Exception) {} } } catch (_: Exception) {}
@@ -60,12 +61,16 @@ class FridayA11yService : AccessibilityService() {
             val n = findByDesc(root, lower, pkgs)
             if (n != null && clickNodeOrAncestor(n)) { logClicked("desc", n); return true }
         }
-        // 3) aggressive: any clickable node whose id/desc/text contains an end-call keyword
-        val endish = listOf("end call", "end_call", "endcall", "hang up", "hangup", "hang_up",
-                            "disconnect", "end button", "endbutton", "leave call", "reject")
-        for (root in roots) {
-            val n = findEndish(root, endish, pkgs)
-            if (n != null && clickNodeOrAncestor(n)) { logClicked("endish", n); return true }
+        // 3) aggressive: any clickable node whose id/desc/text contains an end-call keyword.
+        //    OPT-IN ONLY (hang-up / decline). NEVER for Speaker or Answer — otherwise a missed
+        //    Speaker tap falls through to "End call" and hangs up the call (the outbound-dial bug).
+        if (allowEndish) {
+            val endish = listOf("end call", "end_call", "endcall", "hang up", "hangup", "hang_up",
+                                "disconnect", "end button", "endbutton", "leave call", "reject")
+            for (root in roots) {
+                val n = findEndish(root, endish, pkgs)
+                if (n != null && clickNodeOrAncestor(n)) { logClicked("endish", n); return true }
+            }
         }
         Log.w(ListenerService.TAG, "a11y: no matching call button found")
         return false

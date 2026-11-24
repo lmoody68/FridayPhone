@@ -78,7 +78,7 @@ object CallController {
         if (!ok) {
             ok = FridayA11yService.instance?.clickCallButton(
                 listOf("com.android.systemui:id/end_call_btn", "com.android.incallui:id/decline_button"),
-                listOf("End call", "Decline", "Ignore", "Reject"), CALL_PKGS
+                listOf("End call", "Decline", "Ignore", "Reject"), CALL_PKGS, allowEndish = true
             ) ?: false
         }
         Log.i(ListenerService.TAG, "CallController.voicemail -> $ok")
@@ -91,7 +91,7 @@ object CallController {
         var ok = FridayA11yService.instance?.clickCallButton(
             listOf("com.android.systemui:id/end_call_btn", "com.android.incallui:id/end_button",
                    "com.samsung.android.incallui:id/end_button"),
-            listOf("Hang up", "End call", "Leave call", "End"), CALL_PKGS
+            listOf("Hang up", "End call", "Leave call", "End"), CALL_PKGS, allowEndish = true
         ) ?: false
         if (!ok) {
             val tm = telecom(ctx)
