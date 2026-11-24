@@ -201,6 +201,9 @@ class MainActivity : AppCompatActivity() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ANSWER_PHONE_CALLS)
             != PackageManager.PERMISSION_GRANTED
         ) needed += Manifest.permission.ANSWER_PHONE_CALLS
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE)
+            != PackageManager.PERMISSION_GRANTED
+        ) needed += Manifest.permission.READ_PHONE_STATE
 
         if (needed.isEmpty()) {
             ListenerService.start(this)

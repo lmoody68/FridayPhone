@@ -8,7 +8,11 @@ import android.annotation.SuppressLint
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.telephony.PhoneStateListener
+import android.telephony.TelephonyCallback
+import android.telephony.TelephonyManager
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
@@ -57,6 +61,9 @@ class ListenerService : Service() {
     @Volatile private var ringing = false
     private var audioManager: AudioManager? = null
     private var modeListener: AudioManager.OnModeChangedListener? = null
+    private var telephony: TelephonyManager? = null
+    private var telephonyCb: TelephonyCallback? = null
+    private var phoneListener: PhoneStateListener? = null
 
     // In-call engine: our own AudioRecord on VOICE_COMMUNICATION feeding a Vosk recognizer.
     @Volatile private var inCallRunning = false
@@ -90,6 +97,7 @@ class ListenerService : Service() {
     override fun onDestroy() {
         running = false
         unregisterCallDetector()
+        unregisterRingDetector()
         stopAll()
         super.onDestroy()
     }
@@ -141,6 +149,7 @@ class ListenerService : Service() {
         if (running) return
         running = true
         registerCallDetector()
+        registerRingDetector()
         if (isCallActive()) { inCall = true; startInCallListener() } else { inCall = false; startVoskEngine() }
     }
 
@@ -172,13 +181,59 @@ class ListenerService : Service() {
         modeListener = null
     }
 
+    // ── Reliable RINGING detection via telephony call state (audio mode never reports RINGTONE here) ──
+    private fun registerRingDetector() {
+        if (checkSelfPermission(android.Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) {
+            Log.w(TAG, "READ_PHONE_STATE not granted — ring-gate disabled (grant Phone permission)")
+            return
+        }
+        telephony = getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val cb = object : TelephonyCallback(), TelephonyCallback.CallStateListener {
+                    override fun onCallStateChanged(state: Int) {
+                        ringing = (state == TelephonyManager.CALL_STATE_RINGING)
+                    }
+                }
+                telephonyCb = cb
+                telephony?.registerTelephonyCallback(mainExecutor, cb)
+            } else {
+                val l = object : PhoneStateListener() {
+                    @Deprecated("Deprecated in Java")
+                    override fun onCallStateChanged(state: Int, phoneNumber: String?) {
+                        ringing = (state == TelephonyManager.CALL_STATE_RINGING)
+                    }
+                }
+                phoneListener = l
+                @Suppress("DEPRECATION")
+                telephony?.listen(l, PhoneStateListener.LISTEN_CALL_STATE)
+            }
+            Log.i(TAG, "Ring detector registered")
+        } catch (e: Exception) {
+            Log.w(TAG, "Ring detector register failed: ${e.message}")
+        }
+    }
+
+    private fun unregisterRingDetector() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                telephonyCb?.let { telephony?.unregisterTelephonyCallback(it) }
+            } else {
+                @Suppress("DEPRECATION")
+                phoneListener?.let { telephony?.listen(it, PhoneStateListener.LISTEN_NONE) }
+            }
+        } catch (_: Exception) {}
+        telephonyCb = null
+        phoneListener = null
+    }
+
     private fun isCallActive(): Boolean {
         val m = audioManager?.mode ?: AudioManager.MODE_NORMAL
         return m == AudioManager.MODE_IN_CALL || m == AudioManager.MODE_IN_COMMUNICATION
     }
 
     private fun onAudioMode(mode: Int) {
-        ringing = (mode == AudioManager.MODE_RINGTONE)   // incoming call ringing (ringtone drowns the wake word)
+        // `ringing` is owned by the telephony CallState listener (audio mode never reports RINGTONE on this device).
         val active = (mode == AudioManager.MODE_IN_CALL || mode == AudioManager.MODE_IN_COMMUNICATION)
         if (active && !inCall) {
             inCall = true
@@ -389,12 +444,14 @@ class ListenerService : Service() {
     private fun scan(text: String) {
         if (text.isBlank()) return
         if (!text.contains("friday")) {
-            // A loud incoming ringtone garbles "friday" into Vosk's [unk] token. During that short,
-            // intentional ring window, accept answer / send-to-voicemail that rides an [unk].
-            if (ringing && text.contains("[unk]")) {
+            // The ringtone garbles the wake word, but READ_PHONE_STATE tells us a call is genuinely
+            // RINGING. In that short, unambiguous window, act on the command alone — no wake word
+            // required. Answer wins ties: a wrongly-answered call is recoverable, a wrongly-declined
+            // one is not.
+            if (ringing) {
                 when {
-                    voicemailActions.any { text.contains(it) } -> { Log.i(TAG, "ring-gate -> VOICEMAIL: \"$text\""); maybeFire(ACTION_VOICEMAIL); return }
                     answerActions.any { text.contains(it) } -> { Log.i(TAG, "ring-gate -> ANSWER: \"$text\""); maybeFire(ACTION_ANSWER); return }
+                    voicemailActions.any { text.contains(it) } -> { Log.i(TAG, "ring-gate -> VOICEMAIL: \"$text\""); maybeFire(ACTION_VOICEMAIL); return }
                 }
             }
             if (answerActions.any { text.contains(it) } || hangupActions.any { text.contains(it) } ||
