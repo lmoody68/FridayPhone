@@ -24,7 +24,7 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
             android:gravity="center"
-            android:text="Hands-free call control, on the phone itself. Say &quot;Friday answer the call&quot; to pick up on speaker, or &quot;Friday send to voicemail&quot; to decline an incoming call. To HANG UP during a call, shake the phone (the mic is muted by Android mid-call, so hang-up uses motion) — or press the Power button."
+            android:text="Hands-free call control, on the phone itself. Say &quot;Friday answer the call&quot; to pick up on speaker, &quot;Friday send to voicemail&quot; to decline an incoming call, or &quot;Friday disconnect the call&quot; to hang up DURING a call. (Friday must be set as the default assistant for mid-call hang-up to hear you.)"
             android:textSize="15sp" />
 
         <TextView

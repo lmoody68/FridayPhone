@@ -278,9 +278,9 @@ class ListenerService : Service() {
         if (active && !inCall) {
             inCall = true
             stopCapture()
-            startInCallProbe()   // DIAGNOSTIC: find any mic channel that survives the call
-            updateNotif("On a call — testing mic channels (clap/talk loudly).")
-            Log.i(TAG, "Call active -> IN-CALL SOURCE PROBE")
+            startInCallListener()   // listen on VOICE_RECOGNITION (the one channel the OS leaves live mid-call)
+            updateNotif("On a call — say \"Friday disconnect the call\" to hang up.")
+            Log.i(TAG, "Call active -> IN-CALL LISTENER (VOICE_RECOGNITION)")
         } else if (!active && inCall) {
             inCall = false
             stopCapture()
@@ -315,9 +315,14 @@ class ListenerService : Service() {
         startCapture(MediaRecorder.AudioSource.MIC, grammarJson(), "idle")
     }
 
-    /** In-call listener (hears DURING a VoIP call): VOICE_COMMUNICATION source + hang-up grammar. */
+    /**
+     * In-call listener (hears DURING a connected call). MEASURED 2026-11-24 on this A15: with Friday set as
+     * the default assistant, during a connected cellular call on speaker ONLY the VOICE_RECOGNITION source
+     * stays live (peaks ~23k-28k) while MIC / CAMCORDER / DEFAULT / VOICE_COMMUNICATION are all fed zeros.
+     * So we capture VOICE_RECOGNITION mid-call and run the hang-up grammar on it.
+     */
     private fun startInCallListener() {
-        startCapture(MediaRecorder.AudioSource.VOICE_COMMUNICATION, inCallGrammarJson(), "in-call")
+        startCapture(MediaRecorder.AudioSource.VOICE_RECOGNITION, inCallGrammarJson(), "in-call")
     }
 
     /**
