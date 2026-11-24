@@ -35,6 +35,7 @@ object CallController {
 
     @SuppressLint("MissingPermission")
     fun answer(ctx: Context) {
+        Voice.init(ctx); Voice.say("Connecting now, sir.")
         var ok = false
         val tm = telecom(ctx)
         if (ok.not() && hasAnswerPerm(ctx) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && tm != null) {
@@ -54,6 +55,7 @@ object CallController {
 
     @SuppressLint("MissingPermission")
     fun voicemail(ctx: Context) {
+        Voice.init(ctx); Voice.say("Sending to voicemail, sir.")
         var ok = false
         val tm = telecom(ctx)
         if (hasAnswerPerm(ctx) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && tm != null) {
@@ -72,6 +74,7 @@ object CallController {
 
     @SuppressLint("MissingPermission")
     fun hangup(ctx: Context) {
+        Voice.init(ctx); Voice.say("Call disconnected, sir.")
         // Google Voice VoIP first: tap its own "Hang up" (endCall() can't end a self-managed VoIP call).
         var ok = FridayA11yService.instance?.clickCallButton(
             listOf("com.android.systemui:id/end_call_btn"),

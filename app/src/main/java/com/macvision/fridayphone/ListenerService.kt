@@ -76,6 +76,7 @@ class ListenerService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        Voice.init(this)
         startAsForeground()
     }
 
