@@ -2,7 +2,9 @@ package com.macvision.fridayphone
 
 import android.content.Context
 import android.media.AudioAttributes
+import android.os.SystemClock
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import java.util.Locale
 
@@ -22,6 +24,15 @@ object Voice {
     private var tts: TextToSpeech? = null
     @Volatile private var ready = false
     private val pending = ArrayList<String>()
+
+    // Half-duplex ("one mouth"): while Friday is speaking — plus a short tail for the speaker echo to
+    // die — the listener must ignore the mic, or she hears her own confirmation ("…say Friday stop to
+    // cancel") and acts on it. isSpeaking() is checked at the top of ListenerService.scan().
+    private const val ECHO_TAIL_MS = 900L
+    @Volatile private var speakingNow = false
+    @Volatile private var quietUntil = 0L
+
+    fun isSpeaking(): Boolean = speakingNow || SystemClock.elapsedRealtime() < quietUntil
 
     fun init(ctx: Context) {
         if (tts != null) return
@@ -49,6 +60,14 @@ object Voice {
 
     private fun configure() {
         val t = tts ?: return
+        try {
+            t.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                override fun onStart(id: String?) { speakingNow = true }
+                override fun onDone(id: String?) { speakingNow = false; quietUntil = SystemClock.elapsedRealtime() + ECHO_TAIL_MS }
+                @Deprecated("deprecated base") override fun onError(id: String?) { speakingNow = false; quietUntil = SystemClock.elapsedRealtime() + ECHO_TAIL_MS }
+                override fun onError(id: String?, code: Int) { speakingNow = false; quietUntil = SystemClock.elapsedRealtime() + ECHO_TAIL_MS }
+            })
+        } catch (_: Exception) {}
         try { t.language = Locale.UK } catch (_: Exception) {}
         try {
             t.setAudioAttributes(
@@ -76,7 +95,9 @@ object Voice {
     }
 
     private fun utter(text: String) {
-        try { tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "friday") } catch (_: Exception) {}
+        speakingNow = true   // close the gap before onStart fires so scan() ignores the very first word
+        quietUntil = SystemClock.elapsedRealtime() + 2500L
+        try { tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "friday") } catch (_: Exception) { speakingNow = false }
     }
 
     fun shutdown() {

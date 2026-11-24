@@ -523,6 +523,9 @@ class ListenerService : Service() {
     /** Fire only on wake word "friday" + a command; log what we heard so false matches are diagnosable. */
     private fun scan(text: String) {
         if (text.isBlank()) return
+        // Half-duplex: never react to audio heard while Friday herself is speaking (+ echo tail),
+        // or she acts on her own confirmation ("…say Friday stop to cancel") — the self-cancel bug.
+        if (Voice.isSpeaking()) { Log.i(TAG, "ignored (Friday speaking): \"$text\""); return }
         if (!text.contains("friday")) {
             // A bare "stop"/"cancel" during the dial confirmation window aborts the pending call.
             if (pendingCallNumber != null && cancelActions.any { text.contains(it) }) { cancelPendingCall(); return }
@@ -586,7 +589,9 @@ class ListenerService : Service() {
             if (num != null) CallController.callOut(applicationContext, num, nm)
         }
         pendingDialRunnable = r
-        callHandler.postDelayed(r, 4000L)
+        // ~2.5s of that is Friday speaking the prompt (ignored by the half-duplex gate), leaving a
+        // real cancel window after she finishes.
+        callHandler.postDelayed(r, 5500L)
     }
 
     private fun cancelPendingCall() {
