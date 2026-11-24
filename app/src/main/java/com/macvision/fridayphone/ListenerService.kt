@@ -330,7 +330,7 @@ class ListenerService : Service() {
      */
     private fun idleGrammarJson(): String {
         val phrases = GRAMMAR.filter { it != "[unk]" }.toMutableList()
-        for (name in contactMap.keys.filter { !it.contains(" ") }) {
+        for (name in contactMap.keys.filter { !it.contains(" ") && it != "friday" && it != "hey" }) {
             phrases.add("friday call $name")
             phrases.add("hey friday call $name")
         }
@@ -553,7 +553,7 @@ class ListenerService : Service() {
         }
         // Cancel a pending dial, or start a new outbound call ("Friday call Chris").
         if (pendingCallNumber != null && cancelActions.any { text.contains(it) }) { cancelPendingCall(); return }
-        matchCallTarget(text)?.let { startPendingCall(it); return }
+        if (pendingCallNumber == null) matchCallTarget(text)?.let { startPendingCall(it); return }
         // Not in a call (idle or a call ringing): answer / send-to-voicemail / hang up.
         // Check voicemail first — "send to voicemail" must not be swallowed by another match.
         when {
@@ -563,16 +563,25 @@ class ListenerService : Service() {
         }
     }
 
-    /** "Friday call <name>" → the matched contact key, or null. Won't fire on answer/hang-up/voicemail. */
+    /**
+     * "Friday call <name>" → the matched contact key, or null. The name is the FIRST known contact that
+     * appears AFTER the word "call" (skipping the wake word + fillers), so the wake word "friday" and
+     * garbled trailing audio can't be dialed. Won't fire on answer/hang-up/voicemail phrases.
+     */
+    private val callSkip = setOf("friday", "hey", "my", "the", "a", "to", "call")
     private fun matchCallTarget(text: String): String? {
         if (ringing || inCall || contactMap.isEmpty()) return null
-        if (!text.contains("call")) return null
-        if (answerActions.any { text.contains(it) } || hangupActions.any { text.contains(it) } ||
-            voicemailActions.any { text.contains(it) }) return null
         val words = text.split(Regex("\\s+"))
         val idx = words.indexOf("call")
-        if (idx >= 0 && idx + 1 < words.size && contactMap.containsKey(words[idx + 1])) return words[idx + 1]
-        return contactMap.keys.firstOrNull { !it.contains(" ") && words.contains(it) }
+        if (idx < 0) return null
+        if (answerActions.any { text.contains(it) } || hangupActions.any { text.contains(it) } ||
+            voicemailActions.any { text.contains(it) }) return null
+        for (i in idx + 1 until words.size) {
+            val w = words[i]
+            if (w in callSkip) continue
+            if (contactMap.containsKey(w)) return w
+        }
+        return null
     }
 
     /** Announce, then dial after a short cancel window (so a misheard name doesn't call the wrong person). */
@@ -581,17 +590,17 @@ class ListenerService : Service() {
         pendingDialRunnable?.let { callHandler.removeCallbacks(it) }
         pendingCallNumber = number; pendingCallName = name
         val spoken = name.replaceFirstChar { it.uppercase() }
-        Voice.say("Calling $spoken. Say Friday stop to cancel.")
-        Log.i(TAG, "pending call -> $spoken (4s cancel window)")
+        Voice.say("Calling $spoken. Say stop to cancel.")
+        Log.i(TAG, "pending call -> $spoken (6.5s cancel window)")
         val r = Runnable {
             val num = pendingCallNumber; val nm = pendingCallName ?: ""
             pendingCallNumber = null; pendingCallName = null; pendingDialRunnable = null
             if (num != null) CallController.callOut(applicationContext, num, nm)
         }
         pendingDialRunnable = r
-        // ~2.5s of that is Friday speaking the prompt (ignored by the half-duplex gate), leaving a
-        // real cancel window after she finishes.
-        callHandler.postDelayed(r, 5500L)
+        // ~2s of that is Friday speaking the prompt (ignored by the half-duplex gate), leaving a
+        // comfortable cancel window after she finishes.
+        callHandler.postDelayed(r, 6500L)
     }
 
     private fun cancelPendingCall() {
