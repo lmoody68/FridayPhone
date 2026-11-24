@@ -278,14 +278,12 @@ class ListenerService : Service() {
         if (active && !inCall) {
             inCall = true
             stopCapture()
-            startInCallListener()
-            startShakeDetector()
-            updateNotif("On a call — shake the phone to hang up (or press Power).")
-            Log.i(TAG, "Call active -> in-call listener + shake detector")
+            startInCallProbe()   // DIAGNOSTIC: find any mic channel that survives the call
+            updateNotif("On a call — testing mic channels (clap/talk loudly).")
+            Log.i(TAG, "Call active -> IN-CALL SOURCE PROBE")
         } else if (!active && inCall) {
             inCall = false
             stopCapture()
-            stopShakeDetector()
             stopSR()
             if (running) startIdleListener()
             updateNotif("Say \"Friday answer the call\" to pick up on speaker.")
@@ -320,6 +318,54 @@ class ListenerService : Service() {
     /** In-call listener (hears DURING a VoIP call): VOICE_COMMUNICATION source + hang-up grammar. */
     private fun startInCallListener() {
         startCapture(MediaRecorder.AudioSource.VOICE_COMMUNICATION, inCallGrammarJson(), "in-call")
+    }
+
+    /**
+     * DIAGNOSTIC (v0.10.1): during a call, cycle every mic source and log its peak level, to find any
+     * channel the OS does NOT silence mid-call. If one leaks, a loud clap / "disconnect" can trigger
+     * hang-up with no touch. Read the INCALL_PROBE lines while the user claps/talks on a live call.
+     */
+    @SuppressLint("MissingPermission")
+    private fun startInCallProbe() {
+        stopCapture()
+        val sources = listOf(
+            MediaRecorder.AudioSource.VOICE_RECOGNITION to "VOICE_RECOGNITION",
+            MediaRecorder.AudioSource.MIC to "MIC",
+            MediaRecorder.AudioSource.CAMCORDER to "CAMCORDER",
+            MediaRecorder.AudioSource.DEFAULT to "DEFAULT",
+            MediaRecorder.AudioSource.VOICE_COMMUNICATION to "VOICE_COMMUNICATION"
+        )
+        capRunning = true
+        val t = Thread {
+            val rate = SAMPLE_RATE.toInt()
+            val minBuf = AudioRecord.getMinBufferSize(rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT).coerceAtLeast(rate)
+            while (capRunning) {
+                for ((src, name) in sources) {
+                    if (!capRunning) break
+                    var rec: AudioRecord? = null
+                    try {
+                        rec = AudioRecord(src, rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, minBuf * 2)
+                        if (rec.state != AudioRecord.STATE_INITIALIZED) { Log.i(TAG, "INCALL_PROBE $name INIT_FAIL"); rec.release(); continue }
+                        rec.startRecording()
+                        val buf = ShortArray(minBuf)
+                        var peak = 0
+                        val until = SystemClock.elapsedRealtime() + 2200
+                        while (SystemClock.elapsedRealtime() < until && capRunning) {
+                            val n = rec.read(buf, 0, buf.size)
+                            for (i in 0 until n) { val v = Math.abs(buf[i].toInt()); if (v > peak) peak = v }
+                        }
+                        rec.stop()
+                        val verdict = if (peak >= 1500) "LIVE ***" else if (peak >= 300) "faint" else "silenced"
+                        Log.i(TAG, "INCALL_PROBE $name peak=$peak $verdict")
+                    } catch (e: Exception) {
+                        Log.i(TAG, "INCALL_PROBE $name ERR ${e.javaClass.simpleName}")
+                    } finally { try { rec?.release() } catch (_: Exception) {} }
+                }
+            }
+        }
+        capThread = t
+        t.start()
+        Log.i(TAG, "In-call SOURCE PROBE active — CLAP / talk loudly now")
     }
 
     @SuppressLint("MissingPermission")
