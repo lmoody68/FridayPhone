@@ -53,7 +53,9 @@ object Voice {
         try {
             t.setAudioAttributes(
                 AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                    // Media usage stays audible on the loudspeaker; the assistant channel gets ducked
+                    // or routed to the earpiece the moment a call connects, so the confirmation was silent.
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build()
             )

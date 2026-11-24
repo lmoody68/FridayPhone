@@ -11,8 +11,8 @@ android {
         applicationId = "com.macvision.fridayphone"
         minSdk = 26
         targetSdk = 34
-        versionCode = 12
-        versionName = "0.7.3-ringgate"
+        versionCode = 13
+        versionName = "0.7.4-speaker-voice"
     }
 
     buildTypes {
