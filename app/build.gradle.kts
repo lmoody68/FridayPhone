@@ -11,8 +11,8 @@ android {
         applicationId = "com.macvision.fridayphone"
         minSdk = 26
         targetSdk = 34
-        versionCode = 29
-        versionName = "0.11.3-speakerfix"
+        versionCode = 30
+        versionName = "0.12.0-dictation-guard"
     }
 
     // Fixed signing key so every build has the SAME signature → updates install in place

@@ -545,6 +545,13 @@ class ListenerService : Service() {
             return
         }
         Log.i(TAG, "heard: \"$text\"")
+        // Dictation guard: a real command is short ("friday call chris" = 3 words). When Les dictates
+        // to ANOTHER app — including Claude Code, also named "Friday" — Vosk snaps his natural speech
+        // onto a long command "salad". Real phrases are <= 6 words; reject anything longer.
+        if (text.trim().split(Regex("\\s+")).size > 6) {
+            Log.i(TAG, "ignored (too long — dictation, not a command): \"$text\"")
+            return
+        }
         if (inCall) {
             // During a call only HANG UP is meaningful; ignore "answer" so garbled call audio
             // can't fire the wrong command (and the in-call grammar holds hang-up phrases only).
@@ -575,7 +582,8 @@ class ListenerService : Service() {
         val idx = words.indexOf("call")
         if (idx < 0) return null
         if (answerActions.any { text.contains(it) } || hangupActions.any { text.contains(it) } ||
-            voicemailActions.any { text.contains(it) }) return null
+            voicemailActions.any { text.contains(it) } || cancelActions.any { text.contains(it) }) return null
+        if (words.size > 5) return null   // "friday call <name>" is short; longer = dictation salad
         for (i in idx + 1 until words.size) {
             val w = words[i]
             if (w in callSkip) continue
