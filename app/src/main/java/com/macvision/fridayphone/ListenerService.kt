@@ -85,6 +85,7 @@ class ListenerService : Service() {
     @Volatile private var lastSpk: FloatArray? = null     // the last final utterance's voiceprint vector
     @Volatile private var enrollMode = false
     private val enrollSamples = mutableListOf<FloatArray>()
+    private var enrollStartMs = 0L                         // enroll auto-cancels if it stalls (never gets stuck)
 
     // ── IN-CALL RELAY: "Friday, tell Claude/Jarvis <message>" → open dictation → POST to the bridge. ──
     @Volatile private var relayMode = false
@@ -392,12 +393,21 @@ class ListenerService : Service() {
         if (inCall) { Voice.say("Let's set up your voice when you're off a call, sir."); return }
         if (voskSpeakerModel == null) ensureSpeakerModel()
         enrollMode = true
+        enrollStartMs = System.currentTimeMillis()
         enrollSamples.clear()
         Voice.say("Enrolling your voice, sir. Say, hey Friday this is Les, ${VoiceLock.ENROLL_SAMPLES} times, once after each reply.")
         Log.i(TAG, "voiceprint enrollment started")
     }
 
     private fun collectEnroll(spk: FloatArray?) {
+        // Safety: if enrollment stalls (e.g. it was triggered by mistake and nobody completes it), bail out
+        // instead of looping "say it again" forever.
+        if (System.currentTimeMillis() - enrollStartMs > 25000L) {
+            enrollMode = false; enrollSamples.clear()
+            Voice.say("Never mind, sir — we can set up your voice another time.")
+            Log.i(TAG, "enroll auto-cancelled (timed out)")
+            return
+        }
         if (spk == null || spk.isEmpty()) { Voice.say("I didn't catch your voice, sir — say it again."); return }
         enrollSamples.add(spk)
         if (enrollSamples.size >= VoiceLock.ENROLL_SAMPLES) {
@@ -709,7 +719,23 @@ class ListenerService : Service() {
         // or she acts on her own confirmation ("…say Friday stop to cancel") — the self-cancel bug.
         if (Voice.isSpeaking()) { Log.i(TAG, "ignored (Friday speaking): \"$text\""); return }
         // ── VOICEPRINT LOCK ── "Friday enroll my voice" (re)locks to Les; until enrolled this falls open.
-        if (text.contains("friday") && text.contains("enroll")) { handleEnrollCommand(); return }
+        // Escape hatch (UNGATED on purpose): if the stored print ever gets corrupted, Les can't pass the
+        // voice check to re-enroll — so "Friday, forget my voice" always clears it so he can start fresh.
+        if (text.contains("forget my voice") || text.contains("reset my voice")) {
+            VoiceLock.clear(applicationContext)
+            enrollMode = false; enrollSamples.clear()
+            Voice.say("Done, sir — I've cleared your voiceprint. Say, Friday enroll my voice, to set it up again.")
+            Log.i(TAG, "voiceprint cleared by command"); return
+        }
+        // Enroll ONLY on the explicit full phrase (a bare "enroll" / ambient audio must not trip it), and
+        // once enrolled, ONLY Les's own voice may re-enroll — the TV / far-end can never reset the lock.
+        if (text.contains("enroll my voice")) {
+            if (VoiceLock.isEnrolled() && !VoiceLock.isLes(lastSpk)) {
+                Log.i(TAG, "re-enroll blocked — already enrolled and the voice isn't Les (score=${VoiceLock.score(lastSpk)})")
+                return
+            }
+            handleEnrollCommand(); return
+        }
         // Once enrolled, ONLY Les's voice acts — the TV, a bystander, or JARVIS on speaker are rejected.
         if (VoiceLock.isEnrolled() && !VoiceLock.isLes(lastSpk)) {
             Log.i(TAG, "ignored (voiceprint: not Les, score=${VoiceLock.score(lastSpk)}): \"$text\""); return
@@ -1002,7 +1028,8 @@ class ListenerService : Service() {
             "friday connect the call", "friday connect call", "friday connect",
             "hey friday connect the call", "hey friday connect call",
             // voiceprint enrollment
-            "friday enroll my voice", "friday enroll", "hey friday enroll my voice",
+            "friday enroll my voice", "hey friday enroll my voice",
+            "friday forget my voice", "friday reset my voice", "hey friday forget my voice",
             // in-call relay to Claude / JARVIS
             "friday tell claude", "friday tell jarvis", "friday message claude", "friday message jarvis",
             "hey friday tell claude", "hey friday tell jarvis",
