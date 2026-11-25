@@ -604,16 +604,21 @@ class ListenerService : Service() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return false
         return try {
             val cfgs = audioManager?.activeRecordingConfigurations ?: return false
-            val others = cfgs.count { it.clientAudioSessionId != capSessionId }
-            Log.i(TAG, "recorders: total=${cfgs.size} others=$others (mySession=$capSessionId)" +
-                if (others > 0) " — outbound call SUPPRESSED (dictation)" else "")
-            others > 0
+            cfgs.count { it.clientAudioSessionId != capSessionId } > 0
         } catch (_: Exception) { false }
+    }
+
+    /** Les is dictating/typing into an app → suppress ONLY the outbound call (answer/decline stay live). */
+    private fun isDictating(): Boolean {
+        val focused = try { FridayA11yService.instance?.isTextInputFocused() == true } catch (_: Exception) { false }
+        val recording = externalRecorderActive()   // usually blind on Android 10+, kept as a cheap extra signal
+        if (focused || recording) Log.i(TAG, "dictation detected (textField=$focused extRec=$recording) — outbound call suppressed")
+        return focused || recording
     }
 
     /** Announce, then dial after a short cancel window (so a misheard name doesn't call the wrong person). */
     private fun startPendingCall(name: String) {
-        if (externalRecorderActive()) return   // Les is dictating to another app — don't dial
+        if (isDictating()) return   // Les is dictating into an app — don't dial
         val number = contactMap[name] ?: return
         pendingDialRunnable?.let { callHandler.removeCallbacks(it) }
         pendingCallNumber = number; pendingCallName = name

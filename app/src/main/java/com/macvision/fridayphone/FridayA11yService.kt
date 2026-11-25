@@ -76,6 +76,21 @@ class FridayA11yService : AccessibilityService() {
         return false
     }
 
+    /**
+     * True when an editable text field currently has input focus — i.e. Les is typing or DICTATING
+     * into an app (e.g. the Claude Code prompt box). Used to suppress ONLY the outbound-call command
+     * so dictation that contains "call <name>" can't dial. Reads the live foreground window.
+     */
+    fun isTextInputFocused(): Boolean {
+        val root = try { rootInActiveWindow } catch (_: Exception) { null } ?: return false
+        return try {
+            val f = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+            val editable = f != null && (f.isEditable ||
+                (f.className?.toString()?.contains("EditText", true) == true))
+            editable
+        } catch (_: Exception) { false }
+    }
+
     /** True if no package filter, or the node belongs to one of the allowed packages. */
     private fun pkgOk(n: AccessibilityNodeInfo?, pkgs: List<String>): Boolean {
         if (pkgs.isEmpty()) return true
