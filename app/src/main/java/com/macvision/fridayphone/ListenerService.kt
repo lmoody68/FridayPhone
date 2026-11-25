@@ -610,10 +610,13 @@ class ListenerService : Service() {
 
     /** Les is dictating/typing into an app → suppress ONLY the outbound call (answer/decline stay live). */
     private fun isDictating(): Boolean {
-        val focused = try { FridayA11yService.instance?.isTextInputFocused() == true } catch (_: Exception) { false }
-        val recording = externalRecorderActive()   // usually blind on Android 10+, kept as a cheap extra signal
-        if (focused || recording) Log.i(TAG, "dictation detected (textField=$focused extRec=$recording) — outbound call suppressed")
-        return focused || recording
+        val a11y = FridayA11yService.instance
+        // Primary: the Claude Code app (also "Friday") is in front → he's talking to the CLI, not the phone.
+        if (a11y?.isDictationAppForeground() == true) return true
+        // Secondary: a standard editable field is focused (covers other apps whose fields ARE visible).
+        val focused = try { a11y?.isTextInputFocused() == true } catch (_: Exception) { false }
+        if (focused) { Log.i(TAG, "dictation detected (textField) — outbound call suppressed"); return true }
+        return externalRecorderActive()
     }
 
     /** Announce, then dial after a short cancel window (so a misheard name doesn't call the wrong person). */

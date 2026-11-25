@@ -81,6 +81,20 @@ class FridayA11yService : AccessibilityService() {
      * into an app (e.g. the Claude Code prompt box). Used to suppress ONLY the outbound-call command
      * so dictation that contains "call <name>" can't dial. Reads the live foreground window.
      */
+    /**
+     * True when the foreground app is one Les dictates INTO (notably the Claude Code app, whose own
+     * name is also "Friday"). Claude's prompt box doesn't expose an editable a11y node, so the reliable
+     * tell is simply that its window is in front. Used to suppress ONLY the outbound-call command.
+     */
+    fun isDictationAppForeground(): Boolean {
+        return try {
+            val pkg = rootInActiveWindow?.packageName?.toString()
+            val hit = pkg != null && DICTATION_APPS.any { pkg == it }
+            if (hit) Log.i(ListenerService.TAG, "dictation app foreground: $pkg — outbound call suppressed")
+            hit
+        } catch (_: Exception) { false }
+    }
+
     fun isTextInputFocused(): Boolean {
         val roots = ArrayList<AccessibilityNodeInfo>()
         try { rootInActiveWindow?.let { roots.add(it) } } catch (_: Exception) {}
@@ -187,6 +201,10 @@ class FridayA11yService : AccessibilityService() {
     companion object {
         @Volatile
         var instance: FridayA11yService? = null
+
+        // Apps Les dictates INTO where "Friday" means his CLI assistant, not the phone. While one of
+        // these is in front, the phone suppresses OUTBOUND calls only (answer/decline stay live).
+        val DICTATION_APPS = setOf("com.anthropic.claude")
 
         fun isEnabled(): Boolean = instance != null
     }
