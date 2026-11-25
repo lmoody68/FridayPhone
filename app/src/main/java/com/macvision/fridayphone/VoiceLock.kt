@@ -64,12 +64,16 @@ object VoiceLock {
     }
 
     fun average(vs: List<FloatArray>): FloatArray {
-        val n = vs.firstOrNull { it.isNotEmpty() }?.size ?: return FloatArray(0)
+        val valid = vs.filter { it.isNotEmpty() }
+        if (valid.isEmpty()) return FloatArray(0)
+        val n = valid.first().size
         val out = FloatArray(n)
-        var count = 0
-        for (v in vs) if (v.size >= n) { for (i in 0 until n) out[i] += v[i]; count++ }
-        if (count == 0) return FloatArray(0)
-        for (i in 0 until n) out[i] /= count
+        for (v in valid) {
+            val m = minOf(n, v.size)
+            for (i in 0 until m) out[i] = out[i] + v[i]
+        }
+        val c = valid.size.toFloat()
+        for (i in 0 until n) out[i] = out[i] / c
         return out
     }
 }
