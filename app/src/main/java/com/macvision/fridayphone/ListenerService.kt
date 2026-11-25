@@ -37,6 +37,7 @@ import androidx.core.app.ServiceCompat
 import org.json.JSONObject
 import org.vosk.Model
 import org.vosk.Recognizer
+import org.vosk.SpkModel
 import org.vosk.android.StorageService
 
 /**
@@ -79,13 +80,21 @@ class ListenerService : Service() {
     private var capRecognizer: Recognizer? = null
     @Volatile private var capSessionId = -1   // Friday's own mic session, to tell it from a dictation app's
 
+    // ── VOICEPRINT LOCK: only Les's enrolled voice acts (Vosk speaker x-vectors). Falls open until enrolled. ──
+    private var voskSpkModel: SpkModel? = null
+    @Volatile private var lastSpk: FloatArray? = null     // the last final utterance's voiceprint vector
+    @Volatile private var enrollMode = false
+    private val enrollSamples = mutableListOf<FloatArray>()
+
     private var lastAnswer = 0L
     private var lastHangup = 0L
     private var lastVoicemail = 0L
 
     // Require the wake word "friday" + one of these, so the TV / ambient speech can't trip it.
     private val answerActions = listOf("answer", "pick up", "take the call", "connect", "connect call", "connect the call")
-    private val hangupActions = listOf("hang up", "hangup", "end call", "end the call", "disconnect", "drop the call", "drop")
+    // NOTE: bare "drop" removed 2026-11-25 — it false-fired a hang-up from far-end/overlapping JARVIS audio
+    // on speaker ("friday drop"). Require distinctive phrases; the durable fix is the voiceprint lock below.
+    private val hangupActions = listOf("hang up", "hangup", "end call", "end the call", "disconnect", "disconnect the call", "drop the call")
     private val voicemailActions = listOf("voicemail", "send to voice", "send it to voice", "send them to voice", "voice mail")
     private val cancelActions = listOf("stop", "cancel", "never mind", "nevermind", "no")
     // "Friday, who's calling?" — read the caller ID aloud (read-only; ring-gated). Both the contracted
@@ -172,6 +181,8 @@ class ListenerService : Service() {
     private fun startListening() {
         if (running) return
         running = true
+        VoiceLock.load(this)
+        Thread { ensureSpkModel() }.start()   // load the voiceprint speaker model off the main thread
         contactMap = Contacts.load(this)   // load phone contacts so "Friday call <name>" works
         // Build number -> name so "Friday, who's calling?" can name a known caller. Prefer the longest
         // name key per number (so we say "Justin Moody", not just "Justin").
@@ -337,6 +348,62 @@ class ListenerService : Service() {
         )
     }
 
+    // ── Voiceprint helpers ──────────────────────────────────────────────────
+    /** Load Vosk's speaker model (copied assets→internal storage) so results carry an "spk" voiceprint. */
+    private fun ensureSpkModel() {
+        if (voskSpkModel != null) return
+        try {
+            if (assets.list(SPK_ASSET).isNullOrEmpty()) { Log.w(TAG, "no speaker model asset -> voiceprint off"); return }
+            val dest = java.io.File(filesDir, "model-spk")
+            if (!dest.exists() || (dest.list()?.isEmpty() != false)) copyAssetDir(SPK_ASSET, dest)
+            voskSpkModel = SpkModel(dest.absolutePath)
+            Log.i(TAG, "voiceprint speaker model loaded (enrolled=${VoiceLock.isEnrolled()})")
+        } catch (e: Exception) { Log.w(TAG, "speaker model load failed: ${e.message}") }
+    }
+
+    private fun copyAssetDir(assetPath: String, dest: java.io.File) {
+        val items = try { assets.list(assetPath) } catch (_: Exception) { null }
+        if (items != null && items.isNotEmpty()) {
+            dest.mkdirs()
+            for (item in items) copyAssetDir("$assetPath/$item", java.io.File(dest, item))
+        } else {
+            dest.parentFile?.mkdirs()
+            assets.open(assetPath).use { input -> dest.outputStream().use { out -> input.copyTo(out) } }
+        }
+    }
+
+    /** Parse the voiceprint vector from a Vosk final-result JSON ("spk"), or null. */
+    private fun extractSpk(json: String?): FloatArray? {
+        if (json == null) return null
+        return try {
+            val arr = org.json.JSONObject(json).optJSONArray("spk") ?: return null
+            FloatArray(arr.length()) { arr.getDouble(it).toFloat() }
+        } catch (_: Exception) { null }
+    }
+
+    /** "Friday enroll my voice" → collect the next few utterances' voiceprints and lock to Les. */
+    private fun handleEnrollCommand() {
+        if (inCall) { Voice.say("Let's set up your voice when you're off a call, sir."); return }
+        if (voskSpkModel == null) ensureSpkModel()
+        enrollMode = true
+        enrollSamples.clear()
+        Voice.say("Enrolling your voice, sir. Say, hey Friday this is Les, ${VoiceLock.ENROLL_SAMPLES} times, once after each reply.")
+        Log.i(TAG, "voiceprint enrollment started")
+    }
+
+    private fun collectEnroll(spk: FloatArray?) {
+        if (spk == null || spk.isEmpty()) { Voice.say("I didn't catch your voice, sir — say it again."); return }
+        enrollSamples.add(spk)
+        if (enrollSamples.size >= VoiceLock.ENROLL_SAMPLES) {
+            VoiceLock.save(applicationContext, VoiceLock.average(enrollSamples))
+            enrollMode = false; enrollSamples.clear()
+            Voice.say("Your voiceprint is locked in, sir. I'll only answer to your voice now.")
+            Log.i(TAG, "voiceprint enrolled")
+        } else {
+            Voice.say("Got it. ${VoiceLock.ENROLL_SAMPLES - enrollSamples.size} more.")
+        }
+    }
+
     /** Idle wake-word listener (not in a connected call): MIC source + full grammar (incl. contacts). */
     private fun startIdleListener() {
         if (!running || inCall) return
@@ -440,6 +507,7 @@ class ListenerService : Service() {
                     startSR(); return@ensureModel
                 }
                 val rec = Recognizer(model, SAMPLE_RATE, grammar)
+                voskSpkModel?.let { try { rec.setSpkModel(it) } catch (_: Exception) {} }   // enable voiceprint per-utterance
                 capAudio = audio
                 capSessionId = try { audio.audioSessionId } catch (_: Exception) { -1 }
                 capRecognizer = rec
@@ -461,8 +529,15 @@ class ListenerService : Service() {
                                     try { rec.reset() } catch (_: Exception) {}
                                     mutedForSpeech = false
                                 }
-                                if (rec.acceptWaveForm(buf, n)) scan(extract(rec.result, "text"))
-                                else scan(extract(rec.partialResult, "partial"))
+                                if (rec.acceptWaveForm(buf, n)) {
+                                    val json = rec.result
+                                    val spk = extractSpk(json)                 // this utterance's voiceprint (if spk model on)
+                                    if (enrollMode) { collectEnroll(spk) }     // enrolling → collect, don't act
+                                    else { lastSpk = spk; scan(extract(json, "text")) }
+                                } else {
+                                    // partials carry NO voiceprint → when locked, only act on finals (which do)
+                                    if (!enrollMode && !VoiceLock.isEnrolled()) scan(extract(rec.partialResult, "partial"))
+                                }
                             } else if (n < 0) {
                                 Log.w(TAG, "$label read error ($n)"); faulted = true; break
                             }
@@ -560,6 +635,12 @@ class ListenerService : Service() {
         // Half-duplex: never react to audio heard while Friday herself is speaking (+ echo tail),
         // or she acts on her own confirmation ("…say Friday stop to cancel") — the self-cancel bug.
         if (Voice.isSpeaking()) { Log.i(TAG, "ignored (Friday speaking): \"$text\""); return }
+        // ── VOICEPRINT LOCK ── "Friday enroll my voice" (re)locks to Les; until enrolled this falls open.
+        if (text.contains("friday") && text.contains("enroll")) { handleEnrollCommand(); return }
+        // Once enrolled, ONLY Les's voice acts — the TV, a bystander, or JARVIS on speaker are rejected.
+        if (VoiceLock.isEnrolled() && !VoiceLock.isLes(lastSpk)) {
+            Log.i(TAG, "ignored (voiceprint: not Les, score=${VoiceLock.score(lastSpk)}): \"$text\""); return
+        }
         // Awaiting confirmation of an outbound call → ONLY a clean, SHORT yes/no matters. A salad
         // (Friday's own prompt echoed, or ambient) must never confirm. Never auto-dial.
         if (pendingCallNumber != null) {
@@ -809,6 +890,7 @@ class ListenerService : Service() {
         const val ACTION_VOICEMAIL = "com.macvision.fridayphone.VOICEMAIL"
 
         const val MODEL_ASSET = "model-en-us"
+        const val SPK_ASSET = "model-spk"        // Vosk speaker model for the voiceprint lock
         const val SAMPLE_RATE = 16000.0f
         const val COOLDOWN_MS = 6000L   // wide enough that one spoken command, heard repeatedly, fires once
         // Shake-to-hang-up: a DELIBERATE shake (high threshold, several clustered peaks) so road bumps
@@ -838,6 +920,8 @@ class ListenerService : Service() {
             // "connect" as an answer synonym (what Les says after hearing the caller ID).
             "friday connect the call", "friday connect call", "friday connect",
             "hey friday connect the call", "hey friday connect call",
+            // voiceprint enrollment
+            "friday enroll my voice", "friday enroll", "hey friday enroll my voice",
             "[unk]"
         )
 

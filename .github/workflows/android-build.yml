@@ -27,6 +27,16 @@ jobs:
           echo "vosk-model-small-en-us-0.15" > app/src/main/assets/model-en-us/uuid
           echo "Model contents:" && ls app/src/main/assets/model-en-us
 
+      - name: Fetch Vosk speaker model (voiceprint lock)
+        run: |
+          set -e
+          curl -L --fail -o spk.zip https://alphacephei.com/vosk/models/vosk-model-spk-0.4.zip
+          unzip -q spk.zip
+          rm -rf app/src/main/assets/model-spk
+          mkdir -p app/src/main/assets
+          mv vosk-model-spk-0.4 app/src/main/assets/model-spk
+          echo "Speaker model contents:" && ls app/src/main/assets/model-spk
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
