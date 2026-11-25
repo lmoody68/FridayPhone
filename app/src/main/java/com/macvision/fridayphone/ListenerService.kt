@@ -557,6 +557,14 @@ class ListenerService : Service() {
         if (inCall) {
             // During a call only HANG UP is meaningful; ignore "answer" so garbled call audio
             // can't fire the wrong command (and the in-call grammar holds hang-up phrases only).
+            // On speaker, Friday's in-call ear also hears the OTHER end (e.g. a voicemail greeting),
+            // and the recognizer snaps that onto "friday disconnect" surrounded by [unk] noise ->
+            // a false hang-up. Require a CLEAN phrase (no [unk]): your clear command has none, the
+            // far-end garble always does. (The full fix for other voices is the voiceprint lock.)
+            if (text.contains("[unk]")) {
+                if (hangupActions.any { text.contains(it) }) Log.i(TAG, "in-call hangup IGNORED (far-end/garbled audio): \"$text\"")
+                return
+            }
             if (hangupActions.any { text.contains(it) }) maybeFire(ACTION_HANGUP)
             return
         }
