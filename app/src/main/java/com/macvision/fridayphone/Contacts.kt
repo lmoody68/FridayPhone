@@ -24,7 +24,7 @@ object Contacts {
     // own contacts at runtime (no number stored in code). Les's sons:
     private val PINNED: Map<String, String> = mapOf(
         "justin" to "justin moody",
-        "chris" to "christopher moody"
+        "chris" to "chris moody"
     )
 
     // Common nickname aliases: a contact's FORMAL first name also answers to these short forms, so
