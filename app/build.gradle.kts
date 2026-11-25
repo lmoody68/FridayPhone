@@ -11,8 +11,8 @@ android {
         applicationId = "com.macvision.fridayphone"
         minSdk = 26
         targetSdk = 34
-        versionCode = 53
-        versionName = "0.17.0-mic-reclaim"
+        versionCode = 54
+        versionName = "0.17.1-car-call"
 
         // In-call "Friday, tell Claude …" relay. The KEY is injected from a GitHub Actions secret at
         // build time (repo is PUBLIC → never hard-code it); empty on a local build, which just 403s.

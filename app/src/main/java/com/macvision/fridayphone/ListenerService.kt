@@ -933,7 +933,9 @@ class ListenerService : Service() {
      * (The real general fix for other PEOPLE talking is the voiceprint lock — still to build.)
      */
     private fun isDictating(): Boolean {
-        if (audioManager?.isMusicActive == true) { Log.i(TAG, "media playing — outbound call suppressed"); return true }
+        // (Dropped the old "media playing → suppress" guard: it was blocking legitimate hands-free calls in
+        //  the CAR whenever the stereo/Bluetooth audio was on. The VOICEPRINT LOCK now confirms it's Les
+        //  BEFORE any command, so a radio/TV/video can no longer trigger a call on its own.)
         val a11y = FridayA11yService.instance
         if (a11y?.isDictationAppForeground() == true) return true
         val focused = try { a11y?.isTextInputFocused() == true } catch (_: Exception) { false }
