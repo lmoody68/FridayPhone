@@ -82,13 +82,36 @@ class FridayA11yService : AccessibilityService() {
      * so dictation that contains "call <name>" can't dial. Reads the live foreground window.
      */
     fun isTextInputFocused(): Boolean {
-        val root = try { rootInActiveWindow } catch (_: Exception) { null } ?: return false
-        return try {
-            val f = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
-            val editable = f != null && (f.isEditable ||
-                (f.className?.toString()?.contains("EditText", true) == true))
-            editable
-        } catch (_: Exception) { false }
+        val roots = ArrayList<AccessibilityNodeInfo>()
+        try { rootInActiveWindow?.let { roots.add(it) } } catch (_: Exception) {}
+        try { windows?.forEach { w -> try { w.root?.let { roots.add(it) } } catch (_: Exception) {} } } catch (_: Exception) {}
+        Log.i(ListenerService.TAG, "a11y windows: " + roots.joinToString { "${it.packageName}" })
+        // 1) the global input-focused node, per window root
+        for (r in roots) {
+            try {
+                val f = r.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+                if (f != null) {
+                    val ed = f.isEditable || (f.className?.toString()?.contains("EditText", true) == true)
+                    Log.i(ListenerService.TAG, "a11y INPUT-focus pkg=${f.packageName} cls=${f.className} editable=${f.isEditable} -> ed=$ed")
+                    if (ed) return true
+                }
+            } catch (_: Exception) {}
+        }
+        // 2) fallback: any focused, editable node anywhere in the trees
+        for (r in roots) if (searchFocusedEditable(r)) { Log.i(ListenerService.TAG, "a11y found focused editable (deep)"); return true }
+        return false
+    }
+
+    private fun searchFocusedEditable(node: AccessibilityNodeInfo?): Boolean {
+        if (node == null) return false
+        try {
+            if (node.isFocused && (node.isEditable ||
+                    (node.className?.toString()?.contains("EditText", true) == true))) return true
+        } catch (_: Exception) {}
+        for (i in 0 until node.childCount) {
+            if (searchFocusedEditable(node.getChild(i))) return true
+        }
+        return false
     }
 
     /** True if no package filter, or the node belongs to one of the allowed packages. */
