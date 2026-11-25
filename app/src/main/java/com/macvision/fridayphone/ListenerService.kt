@@ -88,7 +88,7 @@ class ListenerService : Service() {
     private val hangupActions = listOf("hang up", "hangup", "end call", "end the call", "disconnect", "drop the call", "drop")
     private val voicemailActions = listOf("voicemail", "send to voice", "send it to voice", "send them to voice", "voice mail")
     private val cancelActions = listOf("stop", "cancel", "never mind", "nevermind", "no")
-    private val confirmActions = listOf("yes", "yeah", "yep", "yup", "confirm", "correct", "do it")
+    private val confirmActions = listOf("yes", "yeah", "yep", "yup")   // NOT "confirm" (it's in Friday's prompt)
 
     // Outbound calling by voice: name -> number from the phone's own contacts (on-device only).
     @Volatile private var contactMap: Map<String, String> = emptyMap()
@@ -430,9 +430,18 @@ class ListenerService : Service() {
                     val buf = ShortArray(2048)
                     var faulted = false
                     try {
+                        var mutedForSpeech = false
                         while (capRunning) {
                             val n = audio.read(buf, 0, buf.size)
                             if (n > 0) {
+                                // While Friday is speaking (+ echo tail), DRAIN the mic but DON'T feed
+                                // her own voice into the recognizer — otherwise she hears her own prompt
+                                // ("...say Friday yes...") and self-confirms / self-cancels the command.
+                                if (Voice.isSpeaking()) { mutedForSpeech = true; continue }
+                                if (mutedForSpeech) {        // she just finished — flush her prompt audio
+                                    try { rec.reset() } catch (_: Exception) {}
+                                    mutedForSpeech = false
+                                }
                                 if (rec.acceptWaveForm(buf, n)) scan(extract(rec.result, "text"))
                                 else scan(extract(rec.partialResult, "partial"))
                             } else if (n < 0) {
@@ -532,9 +541,11 @@ class ListenerService : Service() {
         // Half-duplex: never react to audio heard while Friday herself is speaking (+ echo tail),
         // or she acts on her own confirmation ("…say Friday stop to cancel") — the self-cancel bug.
         if (Voice.isSpeaking()) { Log.i(TAG, "ignored (Friday speaking): \"$text\""); return }
-        // Awaiting confirmation of an outbound call → ONLY a clean yes/no matters. Never auto-dial.
+        // Awaiting confirmation of an outbound call → ONLY a clean, SHORT yes/no matters. A salad
+        // (Friday's own prompt echoed, or ambient) must never confirm. Never auto-dial.
         if (pendingCallNumber != null) {
-            if (!text.contains("[unk]") && confirmActions.any { text.contains(it) }) { confirmPendingCall(); return }
+            val clean = !text.contains("[unk]") && text.trim().split(Regex("\\s+")).size <= 3
+            if (clean && confirmActions.any { text.contains(it) }) { confirmPendingCall(); return }
             if (cancelActions.any { text.contains(it) }) { cancelPendingCall(); return }
             return
         }
