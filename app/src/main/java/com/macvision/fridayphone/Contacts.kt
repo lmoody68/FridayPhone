@@ -19,6 +19,14 @@ object Contacts {
 
     private const val MAX = 250  // cap the grammar/map so a huge phonebook can't bloat recognition
 
+    // Hard pins: a spoken short name is FORCED to the exact contact (by full display name), no matter
+    // how many duplicates exist and with no starring needed. Resolves to the number from the phone's
+    // own contacts at runtime (no number stored in code). Les's sons:
+    private val PINNED: Map<String, String> = mapOf(
+        "justin" to "justin moody",
+        "chris" to "christopher moody"
+    )
+
     // Common nickname aliases: a contact's FORMAL first name also answers to these short forms, so
     // "call Chris" finds "Christopher Moody". Keys are the formal first name (lowercase).
     private val NICKNAMES: Map<String, List<String>> = mapOf(
@@ -79,6 +87,8 @@ object Contacts {
                     // nickname aliases: "Christopher" also answers to "chris" (starred contact wins the tie
                     // because the query is ordered STARRED DESC, so the first to claim a nick is kept).
                     NICKNAMES[first]?.forEach { nick -> if (nick !in map) map[nick] = num }
+                    // hard pins override everything: force the short name to THIS exact contact.
+                    PINNED.forEach { (short, full) -> if (rawName == full) { map[short] = num; Log.i(ListenerService.TAG, "pinned '$short' -> $full") } }
                     if (rawName != first && rawName.length <= 25 && rawName.all { it.isLetter() || it == ' ' }
                         && rawName !in map
                     ) map[rawName] = num
