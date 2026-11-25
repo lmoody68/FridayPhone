@@ -332,7 +332,9 @@ class ListenerService : Service() {
      */
     private fun idleGrammarJson(): String {
         val phrases = GRAMMAR.filter { it != "[unk]" }.toMutableList()
-        for (name in contactMap.keys.filter { !it.contains(" ") && it != "friday" && it != "hey" }) {
+        // Only the curated, callable names (pins) go in the grammar — a tiny reliable set so the
+        // recognizer can't confuse one name for another out of a 250-contact phonebook.
+        for (name in Contacts.callable.filter { !it.contains(" ") && it != "friday" && it != "hey" }) {
             phrases.add("friday call $name")
             phrases.add("hey friday call $name")
         }

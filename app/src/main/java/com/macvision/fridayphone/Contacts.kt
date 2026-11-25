@@ -25,10 +25,17 @@ object Contacts {
     private val PINNED: Map<String, String> = mapOf(
         "justin" to "justin moody",
         "chris" to "chris moody",
+        "tracy" to "tracy moody",
+        "kenny" to "kenneth ai/ml",
+        "kenneth" to "kenneth ai/ml",
         // "VA" is too short for Vosk (it hears "Dav"/etc.); "Veterans" is recognized reliably.
-        "veterans" to "va education benefits",   // automated GI Bill IVR — safe test target, no person
-        "va" to "va education benefits"
+        "veterans" to "va education benefits"   // automated GI Bill IVR — safe test target, no person
     )
+
+    // Only these short names are put in the recognizer's call grammar — a tiny, reliable set so she
+    // can't confuse a huge phonebook ("Veterans" -> "Daron"). Populated from the pins that resolve.
+    // To add someone: add a PINNED entry (short name -> their exact contact display name).
+    val callable = linkedSetOf<String>()
 
     // Common nickname aliases: a contact's FORMAL first name also answers to these short forms, so
     // "call Chris" finds "Christopher Moody". Keys are the formal first name (lowercase).
@@ -61,6 +68,7 @@ object Contacts {
             return emptyMap()
         }
         val map = LinkedHashMap<String, String>()
+        callable.clear()
         try {
             // STARRED DESC first → a favorite contact wins a first-name tie (so "Justin" = the son you
             // starred, not the first Justin alphabetically). Then name, then most-recently-contacted.
@@ -91,7 +99,7 @@ object Contacts {
                     // because the query is ordered STARRED DESC, so the first to claim a nick is kept).
                     NICKNAMES[first]?.forEach { nick -> if (nick !in map) map[nick] = num }
                     // hard pins override everything: force the short name to THIS exact contact.
-                    PINNED.forEach { (short, full) -> if (rawName == full) { map[short] = num; Log.i(ListenerService.TAG, "pinned '$short' -> $full") } }
+                    PINNED.forEach { (short, full) -> if (rawName == full) { map[short] = num; callable.add(short); Log.i(ListenerService.TAG, "pinned '$short' -> $full") } }
                     if (rawName != first && rawName.length <= 25 && rawName.all { it.isLetter() || it == ' ' }
                         && rawName !in map
                     ) map[rawName] = num
