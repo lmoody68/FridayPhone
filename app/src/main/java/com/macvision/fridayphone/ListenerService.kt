@@ -17,6 +17,7 @@ import android.hardware.SensorManager
 import android.telephony.PhoneStateListener
 import android.telephony.TelephonyCallback
 import android.telephony.TelephonyManager
+import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
@@ -596,6 +597,7 @@ class ListenerService : Service() {
                 capSessionId = try { audio.audioSessionId } catch (_: Exception) { -1 }
                 capRecognizer = rec
                 capRunning = true
+                routeMic(audio)                 // follow the mic onto Bluetooth in the car; else force built-in
                 audio.startRecording()
                 val t = Thread {
                     val buf = ShortArray(2048)
@@ -660,6 +662,34 @@ class ListenerService : Service() {
         capAudio = null
         try { capRecognizer?.close() } catch (_: Exception) {}
         capRecognizer = null
+    }
+
+    /**
+     * Keep Friday's mic working in the CAR. When the phone is on Bluetooth, Android moves the live mic to
+     * the car/headset, so Friday's recorder on the phone's own mic gets silence (this is why nothing worked
+     * in the car). This routes the recorder: if a Bluetooth link is already live (a call routed to the car),
+     * capture the CAR's mic; otherwise force the phone's BUILT-IN mic so a Bluetooth music connection can't
+     * silently steal it. Best-effort — never throws into the capture path.
+     */
+    @SuppressLint("MissingPermission")
+    private fun routeMic(audio: AudioRecord) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+        val am = audioManager ?: return
+        try {
+            val inputs = am.getDevices(AudioManager.GET_DEVICES_INPUTS)
+            val btLive = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                am.communicationDevice?.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+            val target = if (btLive)
+                inputs.firstOrNull { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO }
+            else
+                inputs.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC }
+            if (target != null) {
+                audio.setPreferredDevice(target)
+                Log.i(TAG, "mic routed -> ${if (btLive) "Bluetooth(car)" else "built-in"} (${target.productName})")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "routeMic failed: ${e.message}")
+        }
     }
 
     /**
