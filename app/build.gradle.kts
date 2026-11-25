@@ -11,8 +11,8 @@ android {
         applicationId = "com.macvision.fridayphone"
         minSdk = 26
         targetSdk = 34
-        versionCode = 34
-        versionName = "0.12.4-claude-foreground"
+        versionCode = 35
+        versionName = "0.12.5-media-guard"
     }
 
     // Fixed signing key so every build has the SAME signature → updates install in place

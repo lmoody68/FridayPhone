@@ -608,12 +608,18 @@ class ListenerService : Service() {
         } catch (_: Exception) { false }
     }
 
-    /** Les is dictating/typing into an app → suppress ONLY the outbound call (answer/decline stay live). */
+    /**
+     * Suppress ONLY the outbound call (answer/decline/hang-up stay live, they're call-gated) when the
+     * command almost certainly isn't Les deliberately addressing the phone:
+     *  - media is playing (TikTok / YouTube / TV / music) → the "voice" is the video, not Les;
+     *  - the Claude Code app (also "Friday") is in front → he's dictating to the CLI;
+     *  - a standard editable field is focused, or another app is recording.
+     * (The real general fix for other PEOPLE talking is the voiceprint lock — still to build.)
+     */
     private fun isDictating(): Boolean {
+        if (audioManager?.isMusicActive == true) { Log.i(TAG, "media playing — outbound call suppressed"); return true }
         val a11y = FridayA11yService.instance
-        // Primary: the Claude Code app (also "Friday") is in front → he's talking to the CLI, not the phone.
         if (a11y?.isDictationAppForeground() == true) return true
-        // Secondary: a standard editable field is focused (covers other apps whose fields ARE visible).
         val focused = try { a11y?.isTextInputFocused() == true } catch (_: Exception) { false }
         if (focused) { Log.i(TAG, "dictation detected (textField) — outbound call suppressed"); return true }
         return externalRecorderActive()
