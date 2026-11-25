@@ -240,7 +240,9 @@ class ListenerService : Service() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 val cb = object : TelephonyCallback(), TelephonyCallback.CallStateListener {
                     override fun onCallStateChanged(state: Int) {
+                        val wasRinging = ringing
                         ringing = (state == TelephonyManager.CALL_STATE_RINGING)
+                        if (ringing && !wasRinging) reclaimMicForRing()   // win the mic from Claude Code etc.
                     }
                 }
                 telephonyCb = cb
@@ -249,7 +251,9 @@ class ListenerService : Service() {
                 val l = object : PhoneStateListener() {
                     @Deprecated("Deprecated in Java")
                     override fun onCallStateChanged(state: Int, phoneNumber: String?) {
+                        val wasRinging = ringing
                         ringing = (state == TelephonyManager.CALL_STATE_RINGING)
+                        if (ringing && !wasRinging) reclaimMicForRing()   // win the mic from Claude Code etc.
                     }
                 }
                 phoneListener = l
@@ -656,6 +660,31 @@ class ListenerService : Service() {
         capAudio = null
         try { capRecognizer?.close() } catch (_: Exception) {}
         capRecognizer = null
+    }
+
+    /**
+     * On an incoming RING, aggressively re-grab the microphone. Android gives the live mic to the NEWEST
+     * requester, so if another app holds it — notably the Claude Code app (also named "Friday") while Les
+     * dictates into it — Friday's idle listener gets silence and can't hear "Friday answer / connect call".
+     * Restarting our recorder makes Friday the newest requester and wins the mic back. Two attempts (the
+     * other app may re-grab once), on a background thread so stopCapture's join never blocks the main thread.
+     */
+    private fun reclaimMicForRing() {
+        if (!running || inCall) return
+        Thread {
+            try {
+                repeat(2) { attempt ->
+                    if (!running || inCall || !ringing) return@Thread
+                    Log.i(TAG, "RING → reclaiming mic (attempt ${attempt + 1}) to win it from a foreground app")
+                    stopCapture()
+                    Thread.sleep(120)
+                    Handler(Looper.getMainLooper()).post {
+                        if (running && !inCall && ringing) startIdleListener()
+                    }
+                    Thread.sleep(900)
+                }
+            } catch (_: Exception) {}
+        }.start()
     }
 
     // ── SpeechRecognizer (legacy fallback only; silenced mid-call on this device) ──────────────
