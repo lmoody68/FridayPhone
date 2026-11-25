@@ -87,7 +87,8 @@ class ListenerService : Service() {
     private val answerActions = listOf("answer", "pick up", "take the call")
     private val hangupActions = listOf("hang up", "hangup", "end call", "end the call", "disconnect", "drop the call", "drop")
     private val voicemailActions = listOf("voicemail", "send to voice", "send it to voice", "send them to voice", "voice mail")
-    private val cancelActions = listOf("stop", "cancel", "never mind", "nevermind")
+    private val cancelActions = listOf("stop", "cancel", "never mind", "nevermind", "no")
+    private val confirmActions = listOf("yes", "yeah", "yep", "yup", "confirm", "correct", "do it")
 
     // Outbound calling by voice: name -> number from the phone's own contacts (on-device only).
     @Volatile private var contactMap: Map<String, String> = emptyMap()
@@ -337,6 +338,9 @@ class ListenerService : Service() {
         }
         phrases.add("friday stop"); phrases.add("friday cancel")
         phrases.add("stop"); phrases.add("cancel"); phrases.add("never mind")
+        // confirmation words for the "Call X? say Friday yes" gate
+        phrases.add("friday yes"); phrases.add("yes"); phrases.add("yeah"); phrases.add("yep")
+        phrases.add("confirm"); phrases.add("do it"); phrases.add("no")
         phrases.add("[unk]")
         return phrases.joinToString(prefix = "[", postfix = "]") { "\"$it\"" }
     }
@@ -528,6 +532,12 @@ class ListenerService : Service() {
         // Half-duplex: never react to audio heard while Friday herself is speaking (+ echo tail),
         // or she acts on her own confirmation ("…say Friday stop to cancel") — the self-cancel bug.
         if (Voice.isSpeaking()) { Log.i(TAG, "ignored (Friday speaking): \"$text\""); return }
+        // Awaiting confirmation of an outbound call → ONLY a clean yes/no matters. Never auto-dial.
+        if (pendingCallNumber != null) {
+            if (!text.contains("[unk]") && confirmActions.any { text.contains(it) }) { confirmPendingCall(); return }
+            if (cancelActions.any { text.contains(it) }) { cancelPendingCall(); return }
+            return
+        }
         if (!text.contains("friday")) {
             // A bare "stop"/"cancel" during the dial confirmation window aborts the pending call.
             if (pendingCallNumber != null && cancelActions.any { text.contains(it) }) { cancelPendingCall(); return }
@@ -568,9 +578,8 @@ class ListenerService : Service() {
             if (hangupActions.any { text.contains(it) }) maybeFire(ACTION_HANGUP)
             return
         }
-        // Cancel a pending dial, or start a new outbound call ("Friday call Chris").
-        if (pendingCallNumber != null && cancelActions.any { text.contains(it) }) { cancelPendingCall(); return }
-        if (pendingCallNumber == null) matchCallTarget(text)?.let { startPendingCall(it); return }
+        // Start a new outbound call → ASK FOR CONFIRMATION, never auto-dial (pending handled at top).
+        matchCallTarget(text)?.let { startPendingCall(it); return }
         // Not in a call (idle or a call ringing): answer / send-to-voicemail / hang up.
         // Check voicemail first — "send to voicemail" must not be swallowed by another match.
         when {
@@ -588,6 +597,7 @@ class ListenerService : Service() {
     private val callSkip = setOf("friday", "hey", "my", "the", "a", "to", "call")
     private fun matchCallTarget(text: String): String? {
         if (ringing || inCall || contactMap.isEmpty()) return null
+        if (text.contains("[unk]")) return null   // garbled/ambient audio — never dial off it
         val words = text.split(Regex("\\s+"))
         val idx = words.indexOf("call")
         if (idx < 0) return null
@@ -635,22 +645,30 @@ class ListenerService : Service() {
 
     /** Announce, then dial after a short cancel window (so a misheard name doesn't call the wrong person). */
     private fun startPendingCall(name: String) {
-        if (isDictating()) return   // Les is dictating into an app — don't dial
+        if (isDictating()) return   // Les is dictating into an app — don't even ask
         val number = contactMap[name] ?: return
         pendingDialRunnable?.let { callHandler.removeCallbacks(it) }
         pendingCallNumber = number; pendingCallName = name
         val spoken = name.replaceFirstChar { it.uppercase() }
-        Voice.say("Calling $spoken. Say stop to cancel.")
-        Log.i(TAG, "pending call -> $spoken (6.5s cancel window)")
+        // ASK, don't dial. Nothing is called until Les says "yes". This is the hard guarantee that
+        // ambient audio / a video / a mishear can never place a call on its own.
+        Voice.say("Call $spoken? Say Friday yes to confirm.")
+        Log.i(TAG, "awaiting confirmation -> $spoken (say \"Friday yes\")")
         val r = Runnable {
-            val num = pendingCallNumber; val nm = pendingCallName ?: ""
+            if (pendingCallNumber != null) Log.i(TAG, "confirmation timed out — NOT calling $pendingCallName")
             pendingCallNumber = null; pendingCallName = null; pendingDialRunnable = null
-            if (num != null) CallController.callOut(applicationContext, num, nm)
         }
         pendingDialRunnable = r
-        // ~2s of that is Friday speaking the prompt (ignored by the half-duplex gate), leaving a
-        // comfortable cancel window after she finishes.
-        callHandler.postDelayed(r, 6500L)
+        callHandler.postDelayed(r, 12000L)   // no confirmation within 12s → drop it, no call
+    }
+
+    /** Les said "yes" → place the call that was awaiting confirmation. */
+    private fun confirmPendingCall() {
+        pendingDialRunnable?.let { callHandler.removeCallbacks(it) }
+        pendingDialRunnable = null
+        val num = pendingCallNumber; val nm = pendingCallName ?: ""
+        pendingCallNumber = null; pendingCallName = null
+        if (num != null) { Log.i(TAG, "call CONFIRMED -> dialing $nm"); CallController.callOut(applicationContext, num, nm) }
     }
 
     private fun cancelPendingCall() {
