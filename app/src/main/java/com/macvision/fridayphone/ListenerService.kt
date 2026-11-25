@@ -719,17 +719,19 @@ class ListenerService : Service() {
         // or she acts on her own confirmation ("…say Friday stop to cancel") — the self-cancel bug.
         if (Voice.isSpeaking()) { Log.i(TAG, "ignored (Friday speaking): \"$text\""); return }
         // ── VOICEPRINT LOCK ── "Friday enroll my voice" (re)locks to Les; until enrolled this falls open.
-        // Escape hatch (UNGATED on purpose): if the stored print ever gets corrupted, Les can't pass the
-        // voice check to re-enroll — so "Friday, forget my voice" always clears it so he can start fresh.
-        if (text.contains("forget my voice") || text.contains("reset my voice")) {
+        // A voice enroll/forget command must be CLEAN and SHORT — no "[unk]" garbage, few words. In a noisy
+        // room Vosk snaps random speech onto grammar phrases; requiring a clean match stops that noise from
+        // nagging Les to enroll (or from clearing his print). Deliberate "Friday enroll my voice" still works.
+        val cleanCmd = !text.contains("[unk]") && text.trim().split(Regex("\\s+")).size <= 5
+        // Escape hatch: recover from a corrupted print. Clean phrase required so the TV can't clear the lock.
+        if (cleanCmd && (text.contains("forget my voice") || text.contains("reset my voice"))) {
             VoiceLock.clear(applicationContext)
             enrollMode = false; enrollSamples.clear()
             Voice.say("Done, sir — I've cleared your voiceprint. Say, Friday enroll my voice, to set it up again.")
             Log.i(TAG, "voiceprint cleared by command"); return
         }
-        // Enroll ONLY on the explicit full phrase (a bare "enroll" / ambient audio must not trip it), and
-        // once enrolled, ONLY Les's own voice may re-enroll — the TV / far-end can never reset the lock.
-        if (text.contains("enroll my voice")) {
+        // Enroll ONLY on a CLEAN, explicit "enroll my voice"; once enrolled, only Les's own voice may re-enroll.
+        if (cleanCmd && text.contains("enroll my voice")) {
             if (VoiceLock.isEnrolled() && !VoiceLock.isLes(lastSpk)) {
                 Log.i(TAG, "re-enroll blocked — already enrolled and the voice isn't Les (score=${VoiceLock.score(lastSpk)})")
                 return
