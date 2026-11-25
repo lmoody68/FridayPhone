@@ -25,7 +25,9 @@ object Contacts {
     private val PINNED: Map<String, String> = mapOf(
         "justin" to "justin moody",
         "chris" to "chris moody",
-        "va" to "va education benefits"   // automated IVR line — safe test target, no person bothered
+        // "VA" is too short for Vosk (it hears "Dav"/etc.); "Veterans" is recognized reliably.
+        "veterans" to "va education benefits",   // automated GI Bill IVR — safe test target, no person
+        "va" to "va education benefits"
     )
 
     // Common nickname aliases: a contact's FORMAL first name also answers to these short forms, so
