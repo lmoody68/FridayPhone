@@ -19,6 +19,29 @@ object Contacts {
 
     private const val MAX = 250  // cap the grammar/map so a huge phonebook can't bloat recognition
 
+    // Common nickname aliases: a contact's FORMAL first name also answers to these short forms, so
+    // "call Chris" finds "Christopher Moody". Keys are the formal first name (lowercase).
+    private val NICKNAMES: Map<String, List<String>> = mapOf(
+        "christopher" to listOf("chris"), "kenneth" to listOf("ken", "kenny"),
+        "robert" to listOf("rob", "bob", "bobby"), "william" to listOf("will", "bill", "billy"),
+        "james" to listOf("jim", "jimmy"), "michael" to listOf("mike", "mikey"),
+        "richard" to listOf("rick", "rich", "richie"), "john" to listOf("jack", "johnny"),
+        "thomas" to listOf("tom", "tommy"), "charles" to listOf("charlie", "chuck"),
+        "joseph" to listOf("joe", "joey"), "daniel" to listOf("dan", "danny"),
+        "matthew" to listOf("matt"), "anthony" to listOf("tony"), "david" to listOf("dave"),
+        "edward" to listOf("ed", "eddie"), "steven" to listOf("steve"), "stephen" to listOf("steve"),
+        "andrew" to listOf("andy", "drew"), "joshua" to listOf("josh"), "nicholas" to listOf("nick"),
+        "benjamin" to listOf("ben"), "samuel" to listOf("sam"), "timothy" to listOf("tim"),
+        "jonathan" to listOf("jon", "johnny"), "patrick" to listOf("pat"), "gregory" to listOf("greg"),
+        "jeffrey" to listOf("jeff"), "ronald" to listOf("ron"), "zachary" to listOf("zach"),
+        "elizabeth" to listOf("liz", "beth", "lizzie"), "jennifer" to listOf("jen", "jenny"),
+        "katherine" to listOf("kate", "katie", "kathy"), "catherine" to listOf("kate", "katie", "cathy"),
+        "margaret" to listOf("maggie", "peggy"), "patricia" to listOf("pat", "patty", "trish"),
+        "deborah" to listOf("deb", "debbie"), "rebecca" to listOf("becca", "becky"),
+        "jessica" to listOf("jess"), "alexander" to listOf("alex"), "alexandra" to listOf("alex"),
+        "victoria" to listOf("vicky"), "veronica" to listOf("vero"), "cynthia" to listOf("cindy")
+    )
+
     fun load(ctx: Context): Map<String, String> {
         if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_CONTACTS)
             != PackageManager.PERMISSION_GRANTED
@@ -53,6 +76,9 @@ object Contacts {
                     val first = rawName.split(Regex("\\s+")).firstOrNull()
                         ?.filter { it.isLetter() } ?: continue
                     if (first.length in 2..15 && first !in map) map[first] = num
+                    // nickname aliases: "Christopher" also answers to "chris" (starred contact wins the tie
+                    // because the query is ordered STARRED DESC, so the first to claim a nick is kept).
+                    NICKNAMES[first]?.forEach { nick -> if (nick !in map) map[nick] = num }
                     if (rawName != first && rawName.length <= 25 && rawName.all { it.isLetter() || it == ' ' }
                         && rawName !in map
                     ) map[rawName] = num
