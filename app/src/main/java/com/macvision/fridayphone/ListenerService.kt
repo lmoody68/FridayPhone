@@ -37,7 +37,7 @@ import androidx.core.app.ServiceCompat
 import org.json.JSONObject
 import org.vosk.Model
 import org.vosk.Recognizer
-import org.vosk.SpkModel
+import org.vosk.SpeakerModel
 import org.vosk.android.StorageService
 
 /**
@@ -81,7 +81,7 @@ class ListenerService : Service() {
     @Volatile private var capSessionId = -1   // Friday's own mic session, to tell it from a dictation app's
 
     // ── VOICEPRINT LOCK: only Les's enrolled voice acts (Vosk speaker x-vectors). Falls open until enrolled. ──
-    private var voskSpkModel: SpkModel? = null
+    private var voskSpeakerModel: SpeakerModel? = null
     @Volatile private var lastSpk: FloatArray? = null     // the last final utterance's voiceprint vector
     @Volatile private var enrollMode = false
     private val enrollSamples = mutableListOf<FloatArray>()
@@ -182,7 +182,7 @@ class ListenerService : Service() {
         if (running) return
         running = true
         VoiceLock.load(this)
-        Thread { ensureSpkModel() }.start()   // load the voiceprint speaker model off the main thread
+        Thread { ensureSpeakerModel() }.start()   // load the voiceprint speaker model off the main thread
         contactMap = Contacts.load(this)   // load phone contacts so "Friday call <name>" works
         // Build number -> name so "Friday, who's calling?" can name a known caller. Prefer the longest
         // name key per number (so we say "Justin Moody", not just "Justin").
@@ -350,13 +350,13 @@ class ListenerService : Service() {
 
     // ── Voiceprint helpers ──────────────────────────────────────────────────
     /** Load Vosk's speaker model (copied assets→internal storage) so results carry an "spk" voiceprint. */
-    private fun ensureSpkModel() {
-        if (voskSpkModel != null) return
+    private fun ensureSpeakerModel() {
+        if (voskSpeakerModel != null) return
         try {
             if (assets.list(SPK_ASSET).isNullOrEmpty()) { Log.w(TAG, "no speaker model asset -> voiceprint off"); return }
             val dest = java.io.File(filesDir, "model-spk")
             if (!dest.exists() || (dest.list()?.isEmpty() != false)) copyAssetDir(SPK_ASSET, dest)
-            voskSpkModel = SpkModel(dest.absolutePath)
+            voskSpeakerModel = SpeakerModel(dest.absolutePath)
             Log.i(TAG, "voiceprint speaker model loaded (enrolled=${VoiceLock.isEnrolled()})")
         } catch (e: Exception) { Log.w(TAG, "speaker model load failed: ${e.message}") }
     }
@@ -384,7 +384,7 @@ class ListenerService : Service() {
     /** "Friday enroll my voice" → collect the next few utterances' voiceprints and lock to Les. */
     private fun handleEnrollCommand() {
         if (inCall) { Voice.say("Let's set up your voice when you're off a call, sir."); return }
-        if (voskSpkModel == null) ensureSpkModel()
+        if (voskSpeakerModel == null) ensureSpeakerModel()
         enrollMode = true
         enrollSamples.clear()
         Voice.say("Enrolling your voice, sir. Say, hey Friday this is Les, ${VoiceLock.ENROLL_SAMPLES} times, once after each reply.")
@@ -507,7 +507,7 @@ class ListenerService : Service() {
                     startSR(); return@ensureModel
                 }
                 val rec = Recognizer(model, SAMPLE_RATE, grammar)
-                voskSpkModel?.let { try { rec.setSpkModel(it) } catch (_: Exception) {} }   // enable voiceprint per-utterance
+                voskSpeakerModel?.let { try { rec.setSpeakerModel(it) } catch (_: Exception) {} }   // enable voiceprint per-utterance
                 capAudio = audio
                 capSessionId = try { audio.audioSessionId } catch (_: Exception) { -1 }
                 capRecognizer = rec
