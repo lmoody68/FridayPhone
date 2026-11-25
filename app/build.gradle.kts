@@ -11,8 +11,8 @@ android {
         applicationId = "com.macvision.fridayphone"
         minSdk = 26
         targetSdk = 34
-        versionCode = 36
-        versionName = "0.12.6-assist-handoff"
+        versionCode = 37
+        versionName = "0.12.7-contact-priority"
     }
 
     // Fixed signing key so every build has the SAME signature → updates install in place

@@ -28,6 +28,8 @@ object Contacts {
         }
         val map = LinkedHashMap<String, String>()
         try {
+            // STARRED DESC first → a favorite contact wins a first-name tie (so "Justin" = the son you
+            // starred, not the first Justin alphabetically). Then name, then most-recently-contacted.
             val cur = ctx.contentResolver.query(
                 ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
                 arrayOf(
@@ -35,7 +37,9 @@ object Contacts {
                     ContactsContract.CommonDataKinds.Phone.NUMBER
                 ),
                 null, null,
-                ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME + " ASC"
+                ContactsContract.CommonDataKinds.Phone.STARRED + " DESC, " +
+                    ContactsContract.CommonDataKinds.Phone.LAST_TIME_CONTACTED + " DESC, " +
+                    ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME + " ASC"
             )
             cur?.use { c ->
                 val nameIdx = c.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
