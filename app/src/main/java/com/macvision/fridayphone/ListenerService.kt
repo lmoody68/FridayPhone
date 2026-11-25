@@ -641,6 +641,7 @@ class ListenerService : Service() {
         if (VoiceLock.isEnrolled() && !VoiceLock.isLes(lastSpk)) {
             Log.i(TAG, "ignored (voiceprint: not Les, score=${VoiceLock.score(lastSpk)}): \"$text\""); return
         }
+        if (VoiceLock.isEnrolled()) Log.i(TAG, "accepted (voiceprint: Les, score=${VoiceLock.score(lastSpk)}): \"$text\"")
         // Awaiting confirmation of an outbound call → ONLY a clean, SHORT yes/no matters. A salad
         // (Friday's own prompt echoed, or ambient) must never confirm. Never auto-dial.
         if (pendingCallNumber != null) {

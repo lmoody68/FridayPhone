@@ -15,7 +15,9 @@ object VoiceLock {
     private const val PREFS = "friday_voicelock"
     private const val KEY = "les_voiceprint"
     const val ENROLL_SAMPLES = 3                  // utterances to average into a stable print
-    @Volatile var threshold = 0.42f               // cosine-sim floor for "this is Les" (Vosk x-vectors)
+    // Tuned from live data 2026-11-25: Les's "friday …" utterances scored 0.37–0.45, the
+    // TV/far-end/background topped out at ~0.27. 0.32 sits in that gap → accepts Les, rejects noise.
+    @Volatile var threshold = 0.32f               // cosine-sim floor for "this is Les" (Vosk x-vectors)
 
     @Volatile private var enrolled: FloatArray? = null
     @Volatile private var loaded = false
