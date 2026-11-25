@@ -86,6 +86,12 @@ class ListenerService : Service() {
     @Volatile private var enrollMode = false
     private val enrollSamples = mutableListOf<FloatArray>()
 
+    // ── IN-CALL RELAY: "Friday, tell Claude/Jarvis <message>" → open dictation → POST to the bridge. ──
+    @Volatile private var relayMode = false
+    private var relayRec: Recognizer? = null
+    private var relayTarget = "claude"
+    private var relayStartMs = 0L
+
     private var lastAnswer = 0L
     private var lastHangup = 0L
     private var lastVoicemail = 0L
@@ -404,6 +410,70 @@ class ListenerService : Service() {
         }
     }
 
+    // ── In-call relay helpers ───────────────────────────────────────────────
+    /** "Friday, tell Claude/Jarvis …" → open an un-grammared recognizer and capture the next utterance. */
+    private fun handleRelayCommand(target: String) {
+        val model = voskModel
+        if (model == null) { Voice.say("My ears aren't ready yet, sir."); return }
+        try { relayRec = Recognizer(model, SAMPLE_RATE) }           // no grammar = open dictation
+        catch (e: Exception) { Log.w(TAG, "relayRec init: ${e.message}"); Voice.say("I couldn't set that up, sir."); return }
+        relayTarget = target
+        relayStartMs = System.currentTimeMillis()
+        relayMode = true
+        Voice.say("Go ahead, sir — what should I tell ${if (target == "jarvis") "Jarvis" else "Claude"}?")
+        Log.i(TAG, "relay mode started -> $target")
+    }
+
+    /** Feed audio to the open recognizer; send on a final result, or bail after the window. */
+    private fun handleRelayAudio(buf: ShortArray, n: Int) {
+        val rr = relayRec ?: run { relayMode = false; return }
+        if (System.currentTimeMillis() - relayStartMs > RELAY_WINDOW_MS) { endRelay(null); return }
+        try {
+            if (rr.acceptWaveForm(buf, n)) {
+                val msg = extract(rr.result, "text").trim()
+                if (msg.isNotEmpty() && msg != "the" && msg != "[unk]") endRelay(msg)
+            }
+        } catch (e: Exception) { Log.w(TAG, "relay audio: ${e.message}"); endRelay(null) }
+    }
+
+    private fun endRelay(msg: String?) {
+        relayMode = false
+        try { relayRec?.close() } catch (_: Exception) {}
+        relayRec = null
+        val t = (msg ?: "").trim()
+        if (t.isEmpty()) { Voice.say("I didn't catch a message, sir."); Log.i(TAG, "relay: empty/timeout"); return }
+        Log.i(TAG, "relay -> $relayTarget: \"$t\"")
+        Voice.say("Sending to ${if (relayTarget == "jarvis") "Jarvis" else "Claude"}, sir.")
+        postRelay(t, relayTarget)
+    }
+
+    /** POST the message to the bridge. Cloudflare blocks the default UA → send a browser one. */
+    private fun postRelay(text: String, target: String) {
+        val key = BuildConfig.RELAY_KEY
+        if (key.isEmpty()) { Log.w(TAG, "relay: no RELAY_KEY in build"); return }
+        Thread {
+            try {
+                val url = java.net.URL(BuildConfig.RELAY_URL + "?k=" + java.net.URLEncoder.encode(key, "UTF-8"))
+                val c = url.openConnection() as java.net.HttpURLConnection
+                c.requestMethod = "POST"
+                c.connectTimeout = 8000; c.readTimeout = 12000; c.doOutput = true
+                c.setRequestProperty("Content-Type", "application/json")
+                c.setRequestProperty("User-Agent", "Mozilla/5.0")
+                val payload = org.json.JSONObject()
+                    .put("text", text).put("source", "friday-incall").put("from", target).toString()
+                c.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
+                val code = c.responseCode
+                Log.i(TAG, "relay POST -> HTTP $code")
+                c.disconnect()
+                if (code !in 200..299)
+                    Handler(Looper.getMainLooper()).post { Voice.say("The message didn't go through, sir.") }
+            } catch (e: Exception) {
+                Log.w(TAG, "relay POST failed: ${e.message}")
+                Handler(Looper.getMainLooper()).post { Voice.say("I couldn't reach the server, sir.") }
+            }
+        }.start()
+    }
+
     /** Idle wake-word listener (not in a connected call): MIC source + full grammar (incl. contacts). */
     private fun startIdleListener() {
         if (!running || inCall) return
@@ -527,8 +597,11 @@ class ListenerService : Service() {
                                 if (Voice.isSpeaking()) { mutedForSpeech = true; continue }
                                 if (mutedForSpeech) {        // she just finished — flush her prompt audio
                                     try { rec.reset() } catch (_: Exception) {}
+                                    if (relayMode) { try { relayRec?.reset() } catch (_: Exception) {}; relayStartMs = System.currentTimeMillis() }
                                     mutedForSpeech = false
                                 }
+                                // Relay mode: feed open dictation, not the wake-word grammar.
+                                if (relayMode) { handleRelayAudio(buf, n); continue }
                                 if (rec.acceptWaveForm(buf, n)) {
                                     val json = rec.result
                                     val spk = extractSpk(json)                 // this utterance's voiceprint (if spk model on)
@@ -642,6 +715,12 @@ class ListenerService : Service() {
             Log.i(TAG, "ignored (voiceprint: not Les, score=${VoiceLock.score(lastSpk)}): \"$text\""); return
         }
         if (VoiceLock.isEnrolled()) Log.i(TAG, "accepted (voiceprint: Les, score=${VoiceLock.score(lastSpk)}): \"$text\"")
+        // "Friday, tell Claude/Jarvis <message>" → open-dictation relay (only Les reaches here when enrolled).
+        if (!relayMode && text.contains("friday") &&
+            (text.contains("tell claude") || text.contains("message claude") || text.contains("tell cloud") ||
+             text.contains("tell jarvis") || text.contains("message jarvis"))) {
+            handleRelayCommand(if (text.contains("jarvis")) "jarvis" else "claude"); return
+        }
         // Awaiting confirmation of an outbound call → ONLY a clean, SHORT yes/no matters. A salad
         // (Friday's own prompt echoed, or ambient) must never confirm. Never auto-dial.
         if (pendingCallNumber != null) {
@@ -892,6 +971,7 @@ class ListenerService : Service() {
 
         const val MODEL_ASSET = "model-en-us"
         const val SPK_ASSET = "model-spk"        // Vosk speaker model for the voiceprint lock
+        const val RELAY_WINDOW_MS = 12000L       // after "tell Claude", how long to capture the message
         const val SAMPLE_RATE = 16000.0f
         const val COOLDOWN_MS = 6000L   // wide enough that one spoken command, heard repeatedly, fires once
         // Shake-to-hang-up: a DELIBERATE shake (high threshold, several clustered peaks) so road bumps
@@ -923,6 +1003,9 @@ class ListenerService : Service() {
             "hey friday connect the call", "hey friday connect call",
             // voiceprint enrollment
             "friday enroll my voice", "friday enroll", "hey friday enroll my voice",
+            // in-call relay to Claude / JARVIS
+            "friday tell claude", "friday tell jarvis", "friday message claude", "friday message jarvis",
+            "hey friday tell claude", "hey friday tell jarvis",
             "[unk]"
         )
 

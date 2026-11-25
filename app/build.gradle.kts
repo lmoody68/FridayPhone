@@ -11,8 +11,13 @@ android {
         applicationId = "com.macvision.fridayphone"
         minSdk = 26
         targetSdk = 34
-        versionCode = 49
-        versionName = "0.14.1-voiceprint-tuned"
+        versionCode = 50
+        versionName = "0.15.0-relay"
+
+        // In-call "Friday, tell Claude …" relay. The KEY is injected from a GitHub Actions secret at
+        // build time (repo is PUBLIC → never hard-code it); empty on a local build, which just 403s.
+        buildConfigField("String", "RELAY_URL", "\"https://jarvis-sms.mac-vision.com/relay\"")
+        buildConfigField("String", "RELAY_KEY", "\"${System.getenv("RELAY_KEY") ?: ""}\"")
     }
 
     // Fixed signing key so every build has the SAME signature → updates install in place
@@ -46,6 +51,7 @@ android {
     }
     buildFeatures {
         viewBinding = true
+        buildConfig = true
     }
 }
 
