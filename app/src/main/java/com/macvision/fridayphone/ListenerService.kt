@@ -84,14 +84,21 @@ class ListenerService : Service() {
     private var lastVoicemail = 0L
 
     // Require the wake word "friday" + one of these, so the TV / ambient speech can't trip it.
-    private val answerActions = listOf("answer", "pick up", "take the call")
+    private val answerActions = listOf("answer", "pick up", "take the call", "connect", "connect call", "connect the call")
     private val hangupActions = listOf("hang up", "hangup", "end call", "end the call", "disconnect", "drop the call", "drop")
     private val voicemailActions = listOf("voicemail", "send to voice", "send it to voice", "send them to voice", "voice mail")
     private val cancelActions = listOf("stop", "cancel", "never mind", "nevermind", "no")
+    // "Friday, who's calling?" — read the caller ID aloud (read-only; ring-gated). Both the contracted
+    // and spelled-out forms, so Vosk matches whichever it emits.
+    private val whoActions = listOf("who's calling", "whos calling", "who is calling",
+        "who is it", "who's it", "who's this", "whos this", "who is this", "caller id")
     private val confirmActions = listOf("yes", "yeah", "yep", "yup")   // NOT "confirm" (it's in Friday's prompt)
 
     // Outbound calling by voice: name -> number from the phone's own contacts (on-device only).
     @Volatile private var contactMap: Map<String, String> = emptyMap()
+    // Reverse map (last-10-digits -> best display name) so "who's calling?" can name a known number
+    // even when the ring screen shows only digits. On-device only, never leaves the phone.
+    @Volatile private var reverseContactMap: Map<String, String> = emptyMap()
     private val callHandler = Handler(Looper.getMainLooper())
     @Volatile private var pendingCallNumber: String? = null
     @Volatile private var pendingCallName: String? = null
@@ -166,6 +173,16 @@ class ListenerService : Service() {
         if (running) return
         running = true
         contactMap = Contacts.load(this)   // load phone contacts so "Friday call <name>" works
+        // Build number -> name so "Friday, who's calling?" can name a known caller. Prefer the longest
+        // name key per number (so we say "Justin Moody", not just "Justin").
+        val byNum = HashMap<String, String>()
+        for ((name, num) in contactMap) {
+            val k = last10(num); if (k.length < 7) continue
+            val cur = byNum[k]; if (cur == null || name.length > cur.length) byNum[k] = name
+        }
+        reverseContactMap = byNum.mapValues { e ->
+            e.value.split(Regex("\\s+")).joinToString(" ") { w -> w.replaceFirstChar { c -> c.uppercase() } }
+        }
         registerCallDetector()
         registerRingDetector()
         if (isCallActive()) { inCall = true; startInCallListener() } else { inCall = false; startIdleListener() }
@@ -551,6 +568,9 @@ class ListenerService : Service() {
             if (cancelActions.any { text.contains(it) }) { cancelPendingCall(); return }
             return
         }
+        // "Friday, who's calling?" — read the caller ID aloud. Read-only and ring-gated, so it's safe
+        // to act on the command alone even when the ringtone garbled the wake word (like answer/decline).
+        if (ringing && whoActions.any { text.contains(it) }) { readCallerAloud(); return }
         if (!text.contains("friday")) {
             // A bare "stop"/"cancel" during the dial confirmation window aborts the pending call.
             if (pendingCallNumber != null && cancelActions.any { text.contains(it) }) { cancelPendingCall(); return }
@@ -562,6 +582,8 @@ class ListenerService : Service() {
                 when {
                     answerActions.any { text.contains(it) } -> { Log.i(TAG, "ring-gate -> ANSWER: \"$text\""); maybeFire(ACTION_ANSWER); return }
                     voicemailActions.any { text.contains(it) } -> { Log.i(TAG, "ring-gate -> VOICEMAIL: \"$text\""); maybeFire(ACTION_VOICEMAIL); return }
+                    // On a RINGING call "disconnect"/"decline" == reject -> it goes to voicemail anyway.
+                    hangupActions.any { text.contains(it) } -> { Log.i(TAG, "ring-gate -> DECLINE(voicemail): \"$text\""); maybeFire(ACTION_VOICEMAIL); return }
                 }
             }
             if (answerActions.any { text.contains(it) } || hangupActions.any { text.contains(it) } ||
@@ -597,7 +619,8 @@ class ListenerService : Service() {
         // Check voicemail first — "send to voicemail" must not be swallowed by another match.
         when {
             voicemailActions.any { text.contains(it) } -> maybeFire(ACTION_VOICEMAIL)
-            hangupActions.any { text.contains(it) } -> maybeFire(ACTION_HANGUP)
+            // While ringing, "disconnect" = reject the ringing call -> voicemail (endCall decline).
+            hangupActions.any { text.contains(it) } -> maybeFire(if (ringing) ACTION_VOICEMAIL else ACTION_HANGUP)
             answerActions.any { text.contains(it) } -> maybeFire(ACTION_ANSWER)
         }
     }
@@ -623,6 +646,50 @@ class ListenerService : Service() {
             if (contactMap.containsKey(w)) return w
         }
         return null
+    }
+
+    // ── "Friday, who's calling?" — read the caller ID aloud (read-only) ──────
+    private fun last10(n: String): String {
+        val d = n.filter { it.isDigit() }
+        return if (d.length >= 10) d.takeLast(10) else d
+    }
+
+    /** Read the ring screen via a11y, name the caller from contacts if known, and speak it. */
+    private fun readCallerAloud() {
+        val a11y = FridayA11yService.instance
+        if (a11y == null) { Voice.say("I need accessibility access to see the caller, sir."); return }
+        val raw = try { a11y.readCallerId() } catch (_: Exception) { null }
+        val spoken = callerSpoken(raw)
+        Log.i(TAG, "who's calling -> raw='$raw' -> '$spoken'")
+        Voice.say(spoken)
+    }
+
+    /** Turn the raw on-screen caller label into a natural spoken line. */
+    private fun callerSpoken(raw: String?): String {
+        if (raw.isNullOrBlank()) return "I can't tell who's calling, sir."
+        val low = raw.lowercase()
+        if (low.contains("unknown") || low.contains("no caller") || low.contains("private") ||
+            low.contains("blocked") || low.contains("restricted"))
+            return "It's a private or unknown caller, sir."
+        val digits = raw.filter { it.isDigit() }
+        val letters = raw.count { it.isLetter() }
+        // Mostly digits -> a number. Name it from contacts if we know it, else read the digits.
+        if (digits.length >= 7 && letters <= 2) {
+            reverseContactMap[last10(raw)]?.let { return "It's $it, sir." }
+            return "It's a number I don't recognize: ${spokenDigits(digits)}."
+        }
+        // Otherwise it's the name the dialer already resolved on screen.
+        return "It's $raw, sir."
+    }
+
+    /** Space the digits so TTS reads them one at a time, grouped like a phone number. */
+    private fun spokenDigits(d: String): String {
+        val x = if (d.length > 10) d.takeLast(10) else d
+        return if (x.length == 10)
+            "${x.substring(0, 3).toCharArray().joinToString(" ")}, " +
+                "${x.substring(3, 6).toCharArray().joinToString(" ")}, " +
+                x.substring(6).toCharArray().joinToString(" ")
+        else x.toCharArray().joinToString(" ")
     }
 
     /**
@@ -764,6 +831,13 @@ class ListenerService : Service() {
             "hey friday hang up", "hey friday hang up the call", "hey friday end the call",
             "hey friday disconnect", "hey friday disconnect the call", "hey friday drop the call",
             "hey friday send to voicemail", "hey friday send it to voicemail", "hey friday voicemail",
+            // "Friday, who's calling?" — read the caller ID aloud.
+            "friday who's calling", "friday whos calling", "friday who is calling",
+            "friday who is it", "friday who's this", "friday who is this",
+            "hey friday who's calling", "hey friday who is calling", "hey friday who is it",
+            // "connect" as an answer synonym (what Les says after hearing the caller ID).
+            "friday connect the call", "friday connect call", "friday connect",
+            "hey friday connect the call", "hey friday connect call",
             "[unk]"
         )
 

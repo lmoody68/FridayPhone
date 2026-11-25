@@ -95,6 +95,61 @@ class FridayA11yService : AccessibilityService() {
         } catch (_: Exception) { false }
     }
 
+    /**
+     * Read the incoming-call screen and return the caller the dialer already resolved — the saved
+     * contact NAME if the number is known, otherwise the raw number — for "Friday, who's calling?".
+     * Walks the ring screen's node tree (call packages only), skips UI chrome ("Incoming call",
+     * button labels, SIM/carrier), and returns the caller: a name-looking text (biggest on screen,
+     * the caller label is the largest font) wins; else a phone number; else the largest text. The
+     * dialer does the contact lookup for us, so whatever it displays is exactly what Les wants read.
+     * Returns null if nothing usable is on screen.
+     */
+    fun readCallerId(): String? {
+        val pkgs = listOf(
+            "com.samsung.android.incallui", "com.android.incallui",
+            "com.samsung.android.dialer", "com.android.dialer", "com.google.android.dialer",
+            "com.android.systemui", "com.google.android.apps.googlevoice"
+        )
+        val roots = ArrayList<AccessibilityNodeInfo>()
+        try { rootInActiveWindow?.let { roots.add(it) } } catch (_: Exception) {}
+        try { windows?.forEach { w -> try { w.root?.let { roots.add(it) } } catch (_: Exception) {} } } catch (_: Exception) {}
+
+        // Known ring-screen chrome — never the caller. Case-insensitive substring match.
+        val chrome = listOf(
+            "incoming", "swipe", "answer", "decline", "reject", "ignore", "remind", "message",
+            "reply", "silence", "call back", "add call", "hold", "mute", "keypad", "speaker",
+            "video", "calling via", "google voice", "mobile", "sim ", "sim1", "sim2", "dual",
+            "carrier", "voicemail", "contacts", "emergency", "slide", "end call", "hang up",
+            "on hold", "merge", "record", "bluetooth", "to answer", "to decline"
+        )
+        data class Cand(val text: String, val area: Int, val digits: Int, val letters: Int)
+        val cands = ArrayList<Cand>()
+        fun walk(n: AccessibilityNodeInfo?) {
+            if (n == null) return
+            if (pkgOk(n, pkgs)) {
+                val t = n.text?.toString()?.trim()
+                if (!t.isNullOrBlank() && t.length in 2..40) {
+                    val low = t.lowercase()
+                    if (chrome.none { low.contains(it) }) {
+                        val b = android.graphics.Rect(); n.getBoundsInScreen(b)
+                        cands.add(Cand(t, b.width() * b.height(),
+                            t.count { it.isDigit() }, t.count { it.isLetter() }))
+                    }
+                }
+            }
+            for (i in 0 until n.childCount) walk(n.getChild(i))
+        }
+        for (r in roots) walk(r)
+        if (cands.isEmpty()) { Log.i(ListenerService.TAG, "readCallerId: no caller text on ring screen"); return null }
+
+        // A real NAME (has letters, not mostly digits) is best — read the biggest one (caller label).
+        val nameCand = cands.filter { it.letters >= 2 && it.digits < 7 }.maxByOrNull { it.area }
+        val numberCand = cands.filter { it.digits >= 7 }.maxByOrNull { it.digits }
+        val best = nameCand ?: numberCand ?: cands.maxByOrNull { it.area }
+        Log.i(ListenerService.TAG, "readCallerId: cands=${cands.map { "'${it.text}'(a=${it.area})" }} -> '${best?.text}'")
+        return best?.text
+    }
+
     fun isTextInputFocused(): Boolean {
         val roots = ArrayList<AccessibilityNodeInfo>()
         try { rootInActiveWindow?.let { roots.add(it) } } catch (_: Exception) {}
