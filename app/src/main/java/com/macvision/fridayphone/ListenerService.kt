@@ -77,6 +77,7 @@ class ListenerService : Service() {
     private var capThread: Thread? = null
     private var capAudio: AudioRecord? = null
     private var capRecognizer: Recognizer? = null
+    @Volatile private var capSessionId = -1   // Friday's own mic session, to tell it from a dictation app's
 
     private var lastAnswer = 0L
     private var lastHangup = 0L
@@ -417,6 +418,7 @@ class ListenerService : Service() {
                 }
                 val rec = Recognizer(model, SAMPLE_RATE, grammar)
                 capAudio = audio
+                capSessionId = try { audio.audioSessionId } catch (_: Exception) { -1 }
                 capRecognizer = rec
                 capRunning = true
                 audio.startRecording()
@@ -592,8 +594,26 @@ class ListenerService : Service() {
         return null
     }
 
+    /**
+     * True when an app OTHER than Friday is recording the mic — i.e. Les is dictating (to Claude Code
+     * or anything else). Used to suppress ONLY the outbound-call command: answer/decline/hang-up stay
+     * live because they're already gated to a real ringing/active call, so a call that arrives mid-
+     * dictation can still be answered by voice.
+     */
+    private fun externalRecorderActive(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return false
+        return try {
+            val cfgs = audioManager?.activeRecordingConfigurations ?: return false
+            val others = cfgs.count { it.clientAudioSessionId != capSessionId }
+            Log.i(TAG, "recorders: total=${cfgs.size} others=$others (mySession=$capSessionId)" +
+                if (others > 0) " — outbound call SUPPRESSED (dictation)" else "")
+            others > 0
+        } catch (_: Exception) { false }
+    }
+
     /** Announce, then dial after a short cancel window (so a misheard name doesn't call the wrong person). */
     private fun startPendingCall(name: String) {
+        if (externalRecorderActive()) return   // Les is dictating to another app — don't dial
         val number = contactMap[name] ?: return
         pendingDialRunnable?.let { callHandler.removeCallbacks(it) }
         pendingCallNumber = number; pendingCallName = name
