@@ -782,20 +782,34 @@ class ListenerService : Service() {
         // room Vosk snaps random speech onto grammar phrases; requiring a clean match stops that noise from
         // nagging Les to enroll (or from clearing his print). Deliberate "Friday enroll my voice" still works.
         val cleanCmd = !text.contains("[unk]") && text.trim().split(Regex("\\s+")).size <= 5
-        // Escape hatch: recover from a corrupted print. Clean phrase required so the TV can't clear the lock.
-        if (cleanCmd && (text.contains("forget my voice") || text.contains("reset my voice"))) {
+        // Escape hatch: recover from a corrupted print. Requires wake word + clean phrase so the TV
+        // can't clear the lock, AND — once enrolled — only Les's own voice may clear it. Ambient speech
+        // snapping to "forget my voice" was silently WIPING the enrollment, dropping the lock OPEN.
+        if (cleanCmd && text.contains("friday") &&
+            (text.contains("forget my voice") || text.contains("reset my voice"))) {
+            if (VoiceLock.isEnrolled() && !VoiceLock.isLes(lastSpk)) {
+                Log.i(TAG, "clear blocked — enrolled and the voice isn't Les (score=${VoiceLock.score(lastSpk)})"); return
+            }
             VoiceLock.clear(applicationContext)
             enrollMode = false; enrollSamples.clear()
             Voice.say("Done, sir — I've cleared your voiceprint. Say, Friday enroll my voice, to set it up again.")
             Log.i(TAG, "voiceprint cleared by command"); return
         }
-        // Enroll ONLY on a CLEAN, explicit "enroll my voice"; once enrolled, only Les's own voice may re-enroll.
-        if (cleanCmd && text.contains("enroll my voice")) {
+        // Enroll ONLY on a CLEAN, explicit "Friday enroll my voice"; once enrolled, only Les's own voice
+        // may re-enroll. The wake word is required so ambient "enroll my voice" can't nag Les to re-enroll.
+        if (cleanCmd && text.contains("friday") && text.contains("enroll my voice")) {
             if (VoiceLock.isEnrolled() && !VoiceLock.isLes(lastSpk)) {
                 Log.i(TAG, "re-enroll blocked — already enrolled and the voice isn't Les (score=${VoiceLock.score(lastSpk)})")
                 return
             }
             handleEnrollCommand(); return
+        }
+        // ── FAIL CLOSED when not enrolled ── An unenrolled lock falls OPEN (isLes == true for anyone),
+        // so ambient speech Vosk snaps to a command would FIRE — phantom calls, endless enroll nags.
+        // Refuse to ACT until Les enrolls: only "Friday enroll my voice" (handled above) works unenrolled.
+        // Exception: a genuinely RINGING call — answering is safe/recoverable and must work pre-enrollment.
+        if (!VoiceLock.isEnrolled() && !ringing) {
+            Log.i(TAG, "ignored (not enrolled — lock open, refusing to act): \"$text\""); return
         }
         // Once enrolled, ONLY Les's voice acts — the TV, a bystander, or JARVIS on speaker are rejected.
         if (VoiceLock.isEnrolled() && !VoiceLock.isLes(lastSpk)) {

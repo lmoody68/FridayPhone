@@ -11,8 +11,8 @@ android {
         applicationId = "com.macvision.fridayphone"
         minSdk = 26
         targetSdk = 34
-        versionCode = 55
-        versionName = "0.18.0-bluetooth-mic"
+        versionCode = 56
+        versionName = "0.19.0-voicelock-failclosed"
 
         // In-call "Friday, tell Claude …" relay. The KEY is injected from a GitHub Actions secret at
         // build time (repo is PUBLIC → never hard-code it); empty on a local build, which just 403s.
