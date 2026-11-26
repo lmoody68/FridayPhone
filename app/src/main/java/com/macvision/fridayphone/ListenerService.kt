@@ -812,18 +812,27 @@ class ListenerService : Service() {
             Log.i(TAG, "ignored (not enrolled — lock open, refusing to act): \"$text\""); return
         }
         // Once enrolled, ONLY Les's voice acts — the TV, a bystander, or JARVIS on speaker are rejected.
-        // EXCEPTION (matches line 810): answering/declining a genuinely RINGING call must work even when
-        // the ringtone + caller audio bleeding into the mic garbles the voiceprint sample below threshold.
-        // Without this, "Friday answer/connect the call" is silently rejected over a loud ring and Les has
-        // to tap the button — the exact failure seen 2026-11-26. A wrongly-answered call is recoverable
-        // (line 841's rule); relay/outbound/enroll still require Les's confirmed voice.
+        // EXCEPTION (matches line 810): hands-free CALL CONTROL must work even when the ring/call audio
+        // bleeding into the mic garbles the voiceprint sample below the 0.32 threshold — otherwise Les
+        // can neither answer nor hang up by voice (the exact failures MEASURED 2026-11-26: answer rejected
+        // at score 0.25 over the ringtone; "Friday disconnect the call" rejected at 0.15 / 0.28 mid-call
+        // while JARVIS was talking on speaker, forcing Les to tap End / making JARVIS relay the hang-up).
+        //  • RINGING: answer / decline / voicemail bypass the voiceprint — a wrongly-answered call is
+        //    recoverable (line 841's rule) and only Les is talking to his phone while it rings.
+        //  • IN A CALL: HANG UP bypasses the voiceprint too, but ONLY with the wake word "friday" + a CLEAN
+        //    phrase (no [unk]) — so the far end's garbled speech can't drop the line; it takes Les clearly
+        //    saying "Friday, disconnect the call". Relay / outbound / enroll still require his confirmed voice.
+        val cleanPhrase = !text.contains("[unk]")
         val ringCallControl = ringing && (answerActions.any { text.contains(it) } ||
             voicemailActions.any { text.contains(it) } || hangupActions.any { text.contains(it) })
-        if (VoiceLock.isEnrolled() && !VoiceLock.isLes(lastSpk) && !ringCallControl) {
+        val inCallHangup = inCall && !ringing && text.contains("friday") && cleanPhrase &&
+            hangupActions.any { text.contains(it) }
+        val voiceGateBypass = ringCallControl || inCallHangup
+        if (VoiceLock.isEnrolled() && !VoiceLock.isLes(lastSpk) && !voiceGateBypass) {
             Log.i(TAG, "ignored (voiceprint: not Les, score=${VoiceLock.score(lastSpk)}): \"$text\""); return
         }
-        if (ringCallControl && !VoiceLock.isLes(lastSpk))
-            Log.i(TAG, "ring-bypass: answering ringing call despite voiceprint score=${VoiceLock.score(lastSpk)} (ringtone garble): \"$text\"")
+        if (voiceGateBypass && !VoiceLock.isLes(lastSpk))
+            Log.i(TAG, "voiceprint-bypass (${if (ringCallControl) "ring" else "in-call hangup"}): acting despite score=${VoiceLock.score(lastSpk)} (call-audio garble): \"$text\"")
         if (VoiceLock.isEnrolled()) Log.i(TAG, "accepted (voiceprint: Les, score=${VoiceLock.score(lastSpk)}): \"$text\"")
         // "Friday, tell Claude/Jarvis <message>" → open-dictation relay (only Les reaches here when enrolled).
         if (!relayMode && text.contains("friday") &&
