@@ -61,7 +61,8 @@ object CallController {
                 listOf("Accept", "Answer"), CALL_PKGS
             ) ?: false
         }
-        speakerOn(ctx)
+        resetSpeakerForNewCall()    // new call window — allow a fresh speaker sequence
+        speakerOn(ctx)              // early kick; the audio-mode "call active" hook retries until it sticks
         Log.i(ListenerService.TAG, "CallController.answer -> $ok")
     }
 
@@ -124,8 +125,8 @@ object CallController {
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             ctx.startActivity(i)
             Log.i(ListenerService.TAG, "CallController.callOut -> dialing $name")
-            lastSpeakerOn = 0L          // this is a new call — allow a fresh speaker sequence
-            speakerOn(ctx)
+            resetSpeakerForNewCall()    // new call — allow a fresh speaker sequence
+            speakerOn(ctx)              // early kick; the audio-mode "call active" hook retries until it sticks
         } catch (e: Exception) {
             Log.w(ListenerService.TAG, "callOut: ${e.message}")
             Voice.say("I couldn't place the call, sir.")
@@ -139,28 +140,48 @@ object CallController {
      * UI shows the button (retrying only while it's not yet found, so we never toggle it back off), and
      * fall back to the audio API only if the button never appears.
      */
-    @Volatile private var lastSpeakerOn = 0L
+    // Speaker is confirmed ON at most ONCE per call (a second successful tap would TOGGLE it back off),
+    // but we KEEP RETRYING within a call until that one success — the in-call control bar can take several
+    // seconds to render (especially on an OUTBOUND dial, where the old +1s/3.7s window stabbed at the
+    // still-dialing screen and never found the button). speakerOn() is therefore safe to call repeatedly:
+    // as an early kick from answer()/callOut() AND, reliably, from the audio-mode "call active" transition
+    // (when the UI is definitely up). resetSpeakerForNewCall() clears the per-call latch.
+    @Volatile private var speakerConfirmed = false
+    @Volatile private var speakerSeqRunning = false
 
-    private fun speakerOn(ctx: Context) {
-        // A command can be heard twice (lingering audio) -> answer() runs twice -> two Speaker taps
-        // would TOGGLE the speaker back off. Only run one speaker sequence per call window.
-        val now = SystemClock.elapsedRealtime()
-        if (now - lastSpeakerOn < 12_000L) return
-        lastSpeakerOn = now
+    fun resetSpeakerForNewCall() { speakerConfirmed = false; speakerSeqRunning = false }
+
+    // Resource-ids seen for the speaker toggle across Samsung/AOSP dialers (exact-id match is most reliable).
+    private val SPEAKER_IDS = listOf(
+        "com.samsung.android.incallui:id/speaker", "com.samsung.android.incallui:id/btn_speaker",
+        "com.android.incallui:id/speakerButton", "com.android.incallui:id/audioButton",
+        "com.android.dialer:id/speakerButton", "com.google.android.dialer:id/speakerButton"
+    )
+
+    fun speakerOn(ctx: Context) {
+        if (speakerConfirmed || speakerSeqRunning) return   // one success per call; never stack sequences
+        speakerSeqRunning = true
         val h = Handler(Looper.getMainLooper())
         fun attempt(n: Int) {
+            if (speakerConfirmed) { speakerSeqRunning = false; return }
             val ok = FridayA11yService.instance?.clickCallButton(
-                emptyList(), listOf("Speaker", "Speakerphone"), CALL_PKGS
+                SPEAKER_IDS,
+                listOf("Speaker", "Speakerphone", "Speaker on", "Turn on speaker", "Loudspeaker"),
+                CALL_PKGS
             ) ?: false
-            if (ok) { Log.i(ListenerService.TAG, "speaker: tapped Speaker button"); return }
-            if (n < 4) {
-                h.postDelayed({ attempt(n + 1) }, 900)
+            if (ok) {
+                speakerConfirmed = true; speakerSeqRunning = false
+                Log.i(ListenerService.TAG, "speaker: tapped Speaker button (attempt $n)"); return
+            }
+            if (n < 8) {
+                h.postDelayed({ attempt(n + 1) }, 800)   // ~7s of retries — the in-call bar can render slowly
             } else {
                 setSpeaker(ctx.getSystemService(Context.AUDIO_SERVICE) as? AudioManager)
-                Log.w(ListenerService.TAG, "speaker: UI button not found, tried audio API")
+                speakerSeqRunning = false
+                Log.w(ListenerService.TAG, "speaker: UI button not found over ~7s, tried audio API")
             }
         }
-        h.postDelayed({ attempt(0) }, 1000)
+        h.postDelayed({ attempt(0) }, 600)
     }
 
     @Suppress("DEPRECATION")

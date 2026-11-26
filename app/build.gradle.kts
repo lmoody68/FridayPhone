@@ -11,8 +11,8 @@ android {
         applicationId = "com.macvision.fridayphone"
         minSdk = 26
         targetSdk = 34
-        versionCode = 59
-        versionName = "0.22.0-va-direct-dial"
+        versionCode = 60
+        versionName = "0.23.0-outbound-speaker-fix"
 
         // In-call "Friday, tell Claude …" relay. The KEY is injected from a GitHub Actions secret at
         // build time (repo is PUBLIC → never hard-code it); empty on a local build, which just 403s.

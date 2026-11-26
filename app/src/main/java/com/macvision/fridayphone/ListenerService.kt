@@ -330,12 +330,19 @@ class ListenerService : Service() {
             inCall = true
             stopCapture()
             startInCallListener()   // listen on VOICE_RECOGNITION (the one channel the OS leaves live mid-call)
+            // Turn the speaker on NOW — the call is active and the in-call control bar is rendered, so the
+            // Speaker button actually exists to tap. This is the RELIABLE trigger; answer()/callOut() fire
+            // too early on a slow outbound dial. CRITICAL: the in-call ear only hears Les on speaker, so a
+            // missed speaker = Friday goes deaf mid-call = she can't hear "disconnect". speakerOn() latches
+            // on the first success, so this won't toggle off an already-on speaker from the early kick.
+            CallController.speakerOn(applicationContext)
             updateNotif("On a call — say \"Friday disconnect the call\" to hang up.")
-            Log.i(TAG, "Call active -> IN-CALL LISTENER (VOICE_RECOGNITION)")
+            Log.i(TAG, "Call active -> IN-CALL LISTENER (VOICE_RECOGNITION) + speaker")
         } else if (!active && inCall) {
             inCall = false
             stopCapture()
             stopSR()
+            CallController.resetSpeakerForNewCall()   // arm a fresh speaker sequence for the next call
             if (running) startIdleListener()
             updateNotif("Say \"Friday answer the call\" to pick up on speaker.")
             Log.i(TAG, "Call ended -> idle listener (MIC)")
