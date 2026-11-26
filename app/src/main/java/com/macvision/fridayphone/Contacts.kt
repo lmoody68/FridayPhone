@@ -27,9 +27,15 @@ object Contacts {
         "chris" to "chris moody",
         "tracy" to "tracy moody",
         "kenny" to "kenneth ai/ml",
-        "kenneth" to "kenneth ai/ml",
-        // "VA" is too short for Vosk (it hears "Dav"/etc.); "Veterans" is recognized reliably.
-        "veterans" to "va education benefits"   // automated GI Bill IVR — safe test target, no person
+        "kenneth" to "kenneth ai/ml"
+    )
+
+    // PUBLIC hotlines: spoken word -> literal number. Unlike PINNED (which resolves a PRIVATE contact's
+    // number from the phone at runtime, so no personal number lives in this PUBLIC repo), these are public
+    // toll-free government lines — safe to keep in code, and they work even if READ_CONTACTS is off or the
+    // matching contact is named differently / missing. "VA" is too short for Vosk, so the trigger is "veterans".
+    private val DIRECT: Map<String, String> = mapOf(
+        "veterans" to "18008271000"   // VA national general-benefits hotline, 1-800-827-1000 (Les's requested number)
     )
 
     // Only these short names are put in the recognizer's call grammar — a tiny, reliable set so she
@@ -61,14 +67,17 @@ object Contacts {
     )
 
     fun load(ctx: Context): Map<String, String> {
+        val map = LinkedHashMap<String, String>()
+        callable.clear()
+        // Public hotlines first — no contacts permission needed, and they win over any same-named contact
+        // (seeded before the contact loop, whose inserts are guarded by `!in map`).
+        DIRECT.forEach { (short, num) -> map[short] = num; callable.add(short); Log.i(ListenerService.TAG, "direct '$short' -> $num") }
         if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_CONTACTS)
             != PackageManager.PERMISSION_GRANTED
         ) {
-            Log.w(ListenerService.TAG, "contacts: READ_CONTACTS not granted")
-            return emptyMap()
+            Log.w(ListenerService.TAG, "contacts: READ_CONTACTS not granted (public hotlines still available)")
+            return map
         }
-        val map = LinkedHashMap<String, String>()
-        callable.clear()
         try {
             // STARRED DESC first → a favorite contact wins a first-name tie (so "Justin" = the son you
             // starred, not the first Justin alphabetically). Then name, then most-recently-contacted.
