@@ -1014,7 +1014,11 @@ class ListenerService : Service() {
 
     /** Announce, then dial after a short cancel window (so a misheard name doesn't call the wrong person). */
     private fun startPendingCall(name: String) {
-        if (isDictating()) return   // Les is dictating into an app — don't even ask
+        // Les's rule (2026-11-26): the phone must obey a dial command REGARDLESS of what app is in the
+        // foreground — the Claude app, a game, a website, anything. The old foreground/dictation
+        // suppression (isDictating()) is REMOVED. Safety is still fully covered by three gates that
+        // already passed to get here: wake word "friday" + VOICEPRINT LOCK (only Les's voice) + the
+        // CONFIRM-TO-DIAL below ("Call X? say Friday yes") — nothing dials without Les's explicit confirm.
         val number = contactMap[name] ?: return
         pendingDialRunnable?.let { callHandler.removeCallbacks(it) }
         pendingCallNumber = number; pendingCallName = name
