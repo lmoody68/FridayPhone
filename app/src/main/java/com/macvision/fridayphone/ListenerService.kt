@@ -812,9 +812,18 @@ class ListenerService : Service() {
             Log.i(TAG, "ignored (not enrolled — lock open, refusing to act): \"$text\""); return
         }
         // Once enrolled, ONLY Les's voice acts — the TV, a bystander, or JARVIS on speaker are rejected.
-        if (VoiceLock.isEnrolled() && !VoiceLock.isLes(lastSpk)) {
+        // EXCEPTION (matches line 810): answering/declining a genuinely RINGING call must work even when
+        // the ringtone + caller audio bleeding into the mic garbles the voiceprint sample below threshold.
+        // Without this, "Friday answer/connect the call" is silently rejected over a loud ring and Les has
+        // to tap the button — the exact failure seen 2026-11-26. A wrongly-answered call is recoverable
+        // (line 841's rule); relay/outbound/enroll still require Les's confirmed voice.
+        val ringCallControl = ringing && (answerActions.any { text.contains(it) } ||
+            voicemailActions.any { text.contains(it) } || hangupActions.any { text.contains(it) })
+        if (VoiceLock.isEnrolled() && !VoiceLock.isLes(lastSpk) && !ringCallControl) {
             Log.i(TAG, "ignored (voiceprint: not Les, score=${VoiceLock.score(lastSpk)}): \"$text\""); return
         }
+        if (ringCallControl && !VoiceLock.isLes(lastSpk))
+            Log.i(TAG, "ring-bypass: answering ringing call despite voiceprint score=${VoiceLock.score(lastSpk)} (ringtone garble): \"$text\"")
         if (VoiceLock.isEnrolled()) Log.i(TAG, "accepted (voiceprint: Les, score=${VoiceLock.score(lastSpk)}): \"$text\"")
         // "Friday, tell Claude/Jarvis <message>" → open-dictation relay (only Les reaches here when enrolled).
         if (!relayMode && text.contains("friday") &&
